@@ -3,6 +3,15 @@
 
 /*
   This is a C++ library for building C++ in C++.
+  You can steal this header and use it like a stb-style single-header library:
+  ```cpp
+    #define BUICPP_IMPLEMENTATION
+    #include "buicpp.hpp"
+    buicpp::CommandBuilder cmd;
+    cmd.push("clang++");
+    ...
+  ```
+
   It has additional STL things (for example dynamic arrays) you can use them
   But they're not as production-ready as STL.
 */
@@ -11,7 +20,46 @@
 #include <utility>
 #include <ostream>
 #include <cstddef>
+#include <format>
 #include <version>
+
+#if defined(__unix__) || defined(__unix)
+  #define PLATFORM_UNIX 1
+  #define PLATFORM_POSIX 1
+#elif defined(__APPLE__) || defined(__MACH__)
+  #define PLATFORM_APPLE 1
+  #define PLATFORM_POSIX 1
+#elif defined(_WIN32)
+  #define PLATFORM_WINDOWS 1
+#endif
+
+#include <time.h>
+#ifdef PLATFORM_POSIX
+  #include <unistd.h>
+  #include <sys/wait.h>
+  #include <sys/stat.h>
+  namespace buicpp {
+    inline int execvp(const char* file_name, const char* const* argv) {
+      return ::execvp(file_name, const_cast<char* const*>(argv));
+    }
+  }
+#else // PLATFORM_WINDOWS
+  #include <direct.h>
+  #include <io.h>
+  #include <process.h>
+  namespace buicpp {
+    inline int execvp(const char* file_name, const char* const* argv) {
+      ::_execvp(file_name, argv);
+    }
+  }
+#endif
+
+/*
+  You can define NATIVE_COMPILER in command line while bootstrapping
+*/
+#ifndef NATIVE_COMPILER
+  #define NATIVE_COMPILER NULL /* Detect compiler in runtime */
+#endif
 
 namespace buicpp {
 
@@ -69,11 +117,8 @@ public:
   {
     if (this == &other) return *this;
     if (m_is_left == other.m_is_left) {
-      if (m_is_left) {
-        m_left = std::move(other.m_left);
-      } else {
-        m_right = std::move(other.m_right);
-      }
+      if (m_is_left) m_left = std::move(other.m_left);
+      else m_right = std::move(other.m_right);
     } else {
       if (m_is_left) m_left.~L();
       else m_right.~R();
@@ -125,6 +170,9 @@ private:
 #define ARRAYLIST_DEFAULT_CAPACITY 64
 #endif
 
+// TODO: Do not allocate items with new[]
+// use placement new and calling ctors manually instead
+// to avoid calling default constructors for nothing.
 template <typename T>
 class ArrayList {
 public:
@@ -182,11 +230,15 @@ public:
   bool reserve(size_t extra);
 
   // Add element into idx (shifts array if you're not pushing to back)
-  bool push(T item) { return add(item, m_count); }
-  bool add(T item, size_t idx);
+  bool add(const T& item, size_t idx) { return add_impl(item, idx); }
+  bool add(T&& item, size_t idx) { return add_impl(std::move(item), idx); }
+  bool push(const T& item) { return add_impl(item, m_count); }
+  bool push(T&& item) { return add_impl(std::move(item), m_count); }
+  template<typename... Args>
+  bool push_many(Args&&... args);
 
   // Remove element from idx (shifts array if you're not popping from back)
-  bool pop(T* out = nullptr) { return remove(m_count, out); }
+  bool pop(T* out = nullptr) { return remove(m_count - 1, out); }
   bool remove(size_t idx, T* out = nullptr);
   bool remove_unord(size_t idx, T* out = nullptr);
 
@@ -201,36 +253,117 @@ public:
   }
 
   // [begin, end) iterators
-  T* begin() { return m_items; }
-  T* end() { return m_items + m_count; }
+  T* begin() const { return m_items; }
+  T* end() const { return m_items + m_count; }
   const T* cbegin() const { return m_items; }
   const T* cend()   const { return m_items + m_count; }
 
   size_t count() const { return m_count; }
   size_t capacity() const { return m_capacity; }
+  T* items() const { return m_items; }
+
+  void set_count(size_t val) { m_count = val; }
+  void set_capacity(size_t val) { m_capacity = val; }
 
 private:
   T* m_items;
   size_t m_count = 0;
   size_t m_capacity;
+
+  template <typename U>
+  bool add_impl(U&& item, size_t idx);
 };
 
 template <typename T>
 std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
+// Dynamic Arrays end
+
+// Buic start
+enum class Compiler {
+  UNKNOWN = 0, GCC, CLANG, MSVC, INTEL_LLVM, INTEL_CLASSIC, Count
+};
+
+constexpr const char* to_string(buicpp::Compiler e);
+constexpr buicpp::Compiler compiler_from_cstr(const char* str);
+std::pair<const char*, buicpp::Compiler> get_native_compiler();
+
+struct CmdRunOptions {
+  bool is_log = true;
+  bool is_reset = true;
+};
+
+class CommandBuilder : public ArrayList<std::string> {
+public:
+  using ArrayList<std::string>::ArrayList;
+
+  // Return null-terminated const char* array (case for execvp/execve)
+  ArrayList<const char*> to_argv() const {
+    ArrayList<const char*> argv;
+    argv.reserve(count() + 1);
+    for (const auto& s : *this)
+      argv.push(s.c_str());
+    argv.push(nullptr);
+    return argv;
+  }
+
+  bool run(CmdRunOptions opts = {});
+};
+
+// TODO: Add recursive directory walker (returns array of files)
+// Those files can be folders (so it's cross-refering)
+namespace io {
+bool mkdir_if_not_exists(const char* path);
+#ifdef PLATFORM_POSIX
+#define PATH_SEP '/'
+using stat_t = struct stat;
+inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
+inline bool stat(const char* file_path, struct stat *st) { return ::stat(file_path, st) == 0; }
+inline bool access(const char* file_path, int mode) { return ::access(file_path, mode) == 0; }
+
+#else // PLATFORM_WINDOWS
+#define PATH_SEP '\\'
+inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
+inline bool stat(const char* file_path, struct stat *st) { return ::_stat(file_path, st) == 0; }
+inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
+using stat = struct ::_stat;
+#endif
 }
 
-#if __cplusplus >= 202002L || (defined(__cpp_lib_format) && __cpp_lib_format >= 201907L)
+time_t compare_mtimes(const char* f1, const char* f2);
+
+#define REBUILD_URSELF(argc, argv, ...) \
+  buicpp::_buic_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
+
+template<typename... Args>
+bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
+
+// Buic end
+
+}
+
+#if __cplusplus >= 202002L
 template <typename T>
 struct std::formatter<buicpp::ArrayList<T>> : std::formatter<std::string> {
   auto format(const buicpp::ArrayList<T>& arr, std::format_context& ctx) const -> decltype(ctx.out());
 };
 #endif
-// Dynamic Arrays end
 
 #ifdef BUICPP_IMPLEMENTATION
 
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
+#include <cerrno>
+#include <cstring>
+
+#ifdef PLATFORM_POSIX
+  #include <limits.h>
+  #ifndef PATH_MAX
+    #define PATH_MAX 4096
+  #endif
+#else
+  #define PATH_MAX __MAX_PATH
+#endif
 
 namespace buicpp {
 
@@ -280,15 +413,28 @@ bool ArrayList<T>::shift_right(size_t start, size_t end, size_t amount) {
 }
 
 template <typename T>
-bool ArrayList<T>::add(T item, size_t idx) {
+template <typename U>
+bool ArrayList<T>::add_impl(U&& item, size_t idx) {
   if (idx > m_count) return false;
   if (!reserve(1)) return false;
   bool ok = shift_right(idx, m_count);
   assert(ok && "Shifting right in ArrayList<T>::add failed, this should never fail");
   (void)ok;
-  m_items[idx] = std::move(item);
+  m_items[idx] = std::forward<U>(item);
   m_count++;
   return true;
+}
+
+template <typename T>
+template<typename... Args>
+bool ArrayList<T>::push_many(Args&&... args) {
+  if (!reserve(sizeof...(args))) return false;
+  bool ok = true;
+  auto try_push = [&](auto&& item){
+    if (ok) ok = push(std::forward<decltype(item)>(item));
+  };
+  (try_push(std::forward<Args>(args)), ...);
+  return ok;
 }
 
 template <typename T>
@@ -321,6 +467,192 @@ std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr) {
   os << "]";
   return os;
 }
+// Dynamic Arrays implementation end
+
+// Buic impl start
+bool CommandBuilder::run(CmdRunOptions opts) {
+  if (opts.is_log) {
+    printf("[BUIC/INFO] Running: ");
+    for (size_t i = 0; i < count(); i++) {
+      printf("%s", (*this)[i].c_str());
+      if (i != count() - 1) printf(" ");
+    }
+    printf("\n");
+  }
+
+#ifdef PLATFORM_POSIX
+  pid_t pid = ::fork();
+  if (pid == 0) {
+    // child
+    auto arr = to_argv();
+    buicpp::execvp(arr[0], arr.items());
+    fprintf(stderr, "[BUIC/ERROR] ");
+    ::perror("execvp");
+    exit(1);
+  } else if (pid > 0) {
+    // parent
+    int wstatus = 0;
+    ::waitpid(pid, &wstatus, 0);
+    if (WIFEXITED(wstatus)) {
+      int exit_code = WEXITSTATUS(wstatus);
+      if (exit_code != 0) {
+        fprintf(stderr, "[BUIC/ERROR] Command failed with code %d\n", exit_code);
+        return false;
+      }
+    }
+  } else {
+    fprintf(stderr, "[BUIC/ERROR] ");
+    ::perror("fork");
+    return false;
+  }
+
+#else // WINDOWS
+  auto arr = to_argv();
+  int ret = ::_spawnvp(_P_WAIT, arr[0], arr.items());
+  if (ret == -1) {
+    perror("_spawnvp");
+    return false;
+  }
+  if (ret != 0) {
+    fprintf(stderr, "[BUIC/ERROR] Command failed with code %lld\n",
+    static_cast<long long>(ret));
+    return false;
+  }
+#endif
+
+  if (opts.is_reset) set_count(0);
+  return true;
+}
+
+template<typename... Args>
+bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args) {
+  const char* bin_name = argv[0];
+  char old_bin[1024];
+  snprintf(old_bin, sizeof old_bin, "%s.old", bin_name);
+
+  bool needs_rebuild = false;
+  if (!buicpp::io::access(old_bin, F_OK)) {
+    needs_rebuild = true;
+  } else {
+    needs_rebuild = buicpp::compare_mtimes(file_name, bin_name) >= 0;
+  }
+
+  if (!needs_rebuild) return true;
+  printf("INFO: Change detected in build script, rebuilding itself.\n");
+
+  // Rename the binary to old one
+  printf("INFO: Renaming: '%s' -> '%s'\n", bin_name, old_bin);
+  if (rename(bin_name, old_bin) != 0) {
+    fprintf(stderr, "ERROR: cannot rename '%s': %s\n", bin_name, strerror(errno));
+    return false;
+  }
+
+  // Construct and run rebuild command
+  std::pair<const char*, buicpp::Compiler> comp = buicpp::get_native_compiler();
+  if (comp.second == buicpp::Compiler::UNKNOWN) {
+    fprintf(stderr, "ERROR: Unknown compiler: '%s'\n", comp.first);
+    return false;
+  }
+  CommandBuilder cmd;
+  cmd.push(comp.first);
+  cmd.push(file_name);
+  cmd.push_many(std::forward<Args>(args)...); // custom flags if you need
+
+  if (comp.second == buicpp::Compiler::MSVC) {
+    std::string out = "/Fe:";
+    out += bin_name;
+    cmd.push(std::move(out));
+  } else cmd.push_many("-o", bin_name);
+
+  // Run rebuild command
+  if (!cmd.run()) {
+    fprintf(stderr, "ERROR: cannot rebuild itself.\n");
+    return false;
+  }
+
+  // Run the new binary and exit this old one
+  buicpp::execvp(bin_name, argv);
+  fprintf(stderr, "ERROR: cannot run new binary: %s\n", strerror(errno));
+  return false;
+}
+
+time_t compare_mtimes(const char* f1, const char* f2) {
+  struct stat st_f1, st_f2;
+  if (!buicpp::io::stat(f1, &st_f1)) {
+    fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
+    return false;
+  }
+
+  if (!buicpp::io::stat(f2, &st_f2)) {
+    fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f2, strerror(errno));
+    return false;
+  }
+  return (time_t)(st_f1.st_mtime - st_f2.st_mtime);
+}
+
+constexpr const char* to_string(buicpp::Compiler e) {
+  switch (e) {
+  case buicpp::Compiler::UNKNOWN: return "<unknown>";
+  case buicpp::Compiler::GCC: return "gcc";
+  case buicpp::Compiler::CLANG: return "clang";
+  case buicpp::Compiler::MSVC: return "cl";
+  case buicpp::Compiler::INTEL_LLVM: return "icpx";
+  case buicpp::Compiler::INTEL_CLASSIC: return "icpc";
+  default: return "<invalid>";
+  }
+  assert(false && "unreachable: const char* to_string(buicpp::Compiler e)");
+}
+
+constexpr buicpp::Compiler compiler_from_cstr(const char* str) {
+  if (strcmp(str, "cl") == 0) return buicpp::Compiler::MSVC;
+  if (strcmp(str, "g++") == 0) return buicpp::Compiler::GCC;
+  if (strcmp(str, "clang++") == 0) return buicpp::Compiler::CLANG;
+  if (strcmp(str, "icpx") == 0) return buicpp::Compiler::INTEL_LLVM;
+  if (strcmp(str, "icpc") == 0) return buicpp::Compiler::INTEL_CLASSIC;
+  return buicpp::Compiler::UNKNOWN;
+}
+
+// Get bootstrapped C++ compiler
+std::pair<const char*, buicpp::Compiler> get_native_compiler() {
+#if NATIVE_COMPILER != NULL
+  return {NATIVE_COMPILER, compiler_from_cstr(NATIVE_COMPILER)};
+#else
+  const char* env = getenv("CC");
+  if (env && *env) return {env, compiler_from_cstr(env)};
+
+  #if defined(__INTEL_LLVM_COMPILER)
+    return {"icpx", buicpp::Compiler::INTEL_LLVM};
+  #elif defined(__INTEL_COMPILER)
+    return {"icpc", buicpp::Compiler::INTEL_CLASSIC};
+  #elif defined(__clang__)
+    return {"clang++", buicpp::Compiler::CLANG};
+  #elif defined(__GNUC__)
+    return {"g++", buicpp::Compiler::GCC};
+  #elif defined(_MSC_VER)
+    return {"cl", buicpp::Compiler::MSVC};
+  #else
+    #error "Unknown compiler, define NATIVE_COMPILER or CC manually"
+  #endif
+  assert(false && "unreachable: std::pair<const char*, buicpp::Compiler> get_native_compiler()");
+#endif
+}
+// Buic impl end
+
+namespace io {
+  bool mkdir_if_not_exists(const char* path) {
+    for (const char* p = path + 1; *p != '\0'; p++) {
+      if (*p == PATH_SEP) {
+        size_t i = (size_t)(p - path);
+        if (i >= PATH_MAX) return false;
+        char buf[PATH_MAX] = {0};
+        memcpy(buf, path, i);
+        if (!buicpp::io::mkdir(buf) && errno != EEXIST) return false;
+      }
+    }
+    return true;
+  }
+}
+
 }
 
 #if __cplusplus >= 202002L || (defined(__cpp_lib_format) && __cpp_lib_format >= 201907L)
@@ -339,7 +671,6 @@ auto std::formatter<buicpp::ArrayList<T>>::format(
   return std::formatter<std::string>::format(result, ctx);
 }
 #endif
-// Dynamic Arrays implementation end
 
 #endif // BUICPP_IMPLEMENTATION
 

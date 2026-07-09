@@ -1,7 +1,8 @@
+#include <print>
 #include <stdio.h>
 
 int main() {
-  // TODO: Add comperhensive testing mechanism
   printf("Hello, World!\n");
+  std::println("Hello, World!");
   return 0;
 }
