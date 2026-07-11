@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <utility>
 #include <ostream>
+#include <cassert>
 #include <cstddef>
 #include <format>
 #include <version>
@@ -66,74 +67,77 @@ namespace buicpp {
 // Either start
 struct LTag {};
 struct RTag {};
-inline constexpr LTag EitherLeft = LTag{};
-inline constexpr RTag EitherRight = RTag{};
 
 template <typename L, typename R>
 class Either {
 public:
-  Either(const L& value, LTag)
-    : m_left(value), m_is_left(true) {}
-  Either(L&& value, LTag)
-    : m_left(std::move(value)), m_is_left(true) {}
+  Either(const L& value, LTag) : m_is_left(true), m_left(value) {}
+  Either(L&& value, LTag) : m_is_left(true), m_left(std::move(value)) {}
+  Either(const R& value, RTag) : m_is_left(false), m_right(value) {}
+  Either(R&& value, RTag) : m_is_left(false), m_right(std::move(value)) {}
 
-  Either(const R& value, RTag)
-    : m_right(value), m_is_left(false) {}
-  Either(R&& value, RTag)
-    : m_right(std::move(value)), m_is_left(false) {}
+  ~Either() { destruct_active(); }
 
-  ~Either() { if (m_is_left) m_left.~L(); else m_right.~R(); }
-
+  // copy ctor
   Either(const Either& other) : m_is_left(other.m_is_left)
   {
     if (other.m_is_left) new (&m_left) L(other.m_left);
     else new (&m_right) R(other.m_right);
   }
 
+  // copy assignment
   Either& operator =(const Either& other)
+    noexcept(std::is_nothrow_copy_constructible_v<L> &&
+             std::is_nothrow_copy_constructible_v<R>)
   {
-    if (this == &other) return *this;
+    if (this == &other) return *this; // prevent self-assignment
+    // same sides (both are left or right)
     if (m_is_left == other.m_is_left) {
       if (m_is_left) m_left = other.m_left;
       else m_right = other.m_right;
-    } else {
-      if (m_is_left) m_left.~L();
-      else m_right.~R();
-      if (other.m_is_left) new (&m_left) L(other.m_left);
-      else new (&m_right) R(other.m_right);
-      m_is_left = other.m_is_left;
+      return *this;
     }
+
+    // different sides (one is left other is right or vice versa)
+    if (other.m_is_left) {
+      L tmp(other.m_left); // it can throw exception here but this stays same
+      destruct_active();
+      new (&m_left) L(std::move(tmp));
+    } else {
+      R tmp(other.m_right); // it can throw exception here but this stays same
+      destruct_active();
+      new (&m_right) R(std::move(tmp));
+    }
+
+    m_is_left = !m_is_left;
     return *this;
   }
 
-  Either(Either&& other) noexcept :
-    m_is_left(other.m_is_left)
+  // move ctor
+  Either(Either&& other) noexcept : m_is_left(other.m_is_left)
   {
     if (other.m_is_left) new (&m_left) L(std::move(other.m_left));
     else new (&m_right) R(std::move(other.m_right));
   }
 
-  Either& operator =(Either&& other) noexcept
-  {
+  // move assignment
+  Either& operator = (Either&& other) noexcept {
     if (this == &other) return *this;
     if (m_is_left == other.m_is_left) {
+      // same sides (both are left or right)
       if (m_is_left) m_left = std::move(other.m_left);
       else m_right = std::move(other.m_right);
     } else {
-      if (m_is_left) m_left.~L();
-      else m_right.~R();
+      // different sides (one is left other is right or vice versa)
+      destruct_active();
       if (other.m_is_left) new (&m_left) L(std::move(other.m_left));
       else new (&m_right) R(std::move(other.m_right));
-      m_is_left = other.m_is_left;
+      m_is_left = !m_is_left;
     }
     return *this;
   }
 
-  bool is_left() { return m_is_left; }
-  bool is_right() { return !m_is_left; }
-  L left() { return m_left; }
-  R right() { return m_right; }
-
+  // Equals or not equals operator overloads
   bool operator ==(const Either& other) const {
     if (m_is_left != other.m_is_left) return false;
     if (m_is_left) return m_left == other.m_left;
@@ -143,11 +147,48 @@ public:
     return !(*this == other);
   }
 
+  // Swap 2 different Either instances
   void swap(Either& other) {
     if (this == &other) return;
     Either tmp(std::move(*this));
     *this = std::move(other);
     other = std::move(tmp);
+  }
+
+  // Check if it's holding left or right
+  bool is_left() const { return m_is_left; }
+  bool is_right() const { return !m_is_left; }
+
+  // Take (steal) or view for left
+  L&& left() && {
+    assert(m_is_left && "Tried to access left but it's holding right one");
+    return std::move(m_left);
+  }
+  const L& left() const& {
+    assert(m_is_left && "Tried to access left but it's holding right one");
+    return m_left;
+  }
+
+  // Take (steal) or view for right
+  R&& right() && {
+    assert(!m_is_left && "Tried to access right but it's holding left one");
+    return std::move(m_right);
+  }
+  const R& right() const& {
+    assert(!m_is_left && "Tried to access right but it's holding left one");
+    return m_right;
+  }
+
+  template <typename LF, typename RF>
+  auto match(LF&& left_fn, RF&& right_fn) const& {
+    if (m_is_left) return left_fn(m_left);
+    else return right_fn(m_right);
+  }
+
+  template <typename LF, typename RF>
+  auto match(LF&& left_fn, RF&& right_fn) && {
+    if (m_is_left) return left_fn(std::move(m_left));
+    else return right_fn(std::move(m_right));
   }
 
 private:
@@ -156,12 +197,110 @@ private:
     L m_left;
     R m_right;
   };
+  void destruct_active() { if (m_is_left) m_left.~L(); else m_right.~R(); }
 };
 
-// TODO: Write different constructor for Option/Result
-// struct None {};
-// template<typename T>
-// using Option = Either<T, None>;
+// Left factory for Either
+template <typename L>
+struct LeftOf {
+  L value;
+  LeftOf(const L& v) : value(v) {}
+  LeftOf(L&& v) : value(std::move(v)) {}
+
+  template <typename R>
+  operator Either<L, R>() && { return Either<L, R>(std::move(value), LTag{}); }
+  template <typename R>
+  operator Either<L, R>() const& { return Either<L, R>(value, LTag{}); }
+};
+template <typename L>
+LeftOf(L) -> LeftOf<L>;
+
+// Right factory for Either
+template <typename R>
+struct RightOf {
+  R value;
+  RightOf(const R& v) : value(v) {}
+  RightOf(R&& v) : value(std::move(v)) {}
+
+  template <typename L>
+  operator Either<L, R>() && { return Either<L, R>(std::move(value), RTag{}); }
+  template <typename L>
+  operator Either<L, R>() const& { return Either<L, R>(value, RTag{}); }
+};
+template <typename R>
+RightOf(R) -> RightOf<R>;
+
+struct Nothing{};
+template <typename T>
+class Option : public Either<T, Nothing> {
+  using Base = Either<T, Nothing>;
+public:
+  using Base::Base;
+
+  bool is_some() const { return this->is_left(); }
+  bool is_none() const { return this->is_right(); }
+  T&& value() && { return std::move(*this).left(); }
+  const T& value() const& { return this->left(); }
+};
+
+template <typename T>
+struct Some {
+  T value;
+  Some(const T& v) : value(v) {}
+  Some(T&& v) : value(std::move(v)) {}
+
+  operator Option<T>() && { return Option<T>(std::move(value), LTag{}); }
+  operator Option<T>() const& { return Option<T>(value, LTag{}); }
+};
+
+struct NoneTag {
+  template <typename T>
+  operator Option<T>() const { return Option<T>(Nothing{}, RTag{}); }
+};
+inline constexpr NoneTag None = {};
+
+struct Error {
+  int code;
+  const char* msg;
+};
+
+template <typename T, typename E = Error>
+class Result : public Either<T, E> {
+  using Base = Either<T, E>;
+public:
+  using Base::Base;
+
+  bool is_ok() const { return this->is_left(); }
+  bool is_err() const { return this->is_right(); }
+  T&& value() && { return std::move(*this).left(); }
+  const T& value() const& { return this->left(); }
+  const E& error() const& { return this->right(); }
+};
+
+template <typename T>
+struct Ok {
+  T value;
+  Ok(const T& v) : value(v) {}
+  Ok(T&& v) : value(std::move(v)) {}
+
+  template <typename E = Error>
+  operator Result<T, E>() && { return Result<T, E>(std::move(value), LTag{}); }
+  template <typename E = Error>
+  operator Result<T, E>() const& { return Result<T, E>(value, LTag{}); }
+};
+
+template <typename E = Error>
+struct Err {
+  E value;
+  Err(const E& e) : value(e) {}
+  Err(E&& e) : value(std::move(e)) {}
+
+  template <typename T>
+  operator Result<T, E>() const& { return Result<T, E>(value, RTag{}); }
+  template <typename T>
+  operator Result<T, E>() && { return Result<T, E>(std::move(value), RTag{}); }
+};
+template <typename E = Error> Err(E) -> Err<E>;
 
 // Either end
 
@@ -283,8 +422,8 @@ enum class Compiler {
   UNKNOWN = 0, GCC, CLANG, MSVC, INTEL_LLVM, INTEL_CLASSIC, Count
 };
 
-constexpr const char* to_string(buicpp::Compiler e);
-constexpr buicpp::Compiler compiler_from_cstr(const char* str);
+const char* to_string(buicpp::Compiler e);
+buicpp::Compiler compiler_from_cstr(const char* str);
 std::pair<const char*, buicpp::Compiler> get_native_compiler();
 
 struct CmdRunOptions {
@@ -590,7 +729,7 @@ time_t compare_mtimes(const char* f1, const char* f2) {
   return (time_t)(st_f1.st_mtime - st_f2.st_mtime);
 }
 
-constexpr const char* to_string(buicpp::Compiler e) {
+const char* to_string(buicpp::Compiler e) {
   switch (e) {
   case buicpp::Compiler::UNKNOWN: return "<unknown>";
   case buicpp::Compiler::GCC: return "gcc";
@@ -603,7 +742,7 @@ constexpr const char* to_string(buicpp::Compiler e) {
   assert(false && "unreachable: const char* to_string(buicpp::Compiler e)");
 }
 
-constexpr buicpp::Compiler compiler_from_cstr(const char* str) {
+buicpp::Compiler compiler_from_cstr(const char* str) {
   if (strcmp(str, "cl") == 0) return buicpp::Compiler::MSVC;
   if (strcmp(str, "g++") == 0) return buicpp::Compiler::GCC;
   if (strcmp(str, "clang++") == 0) return buicpp::Compiler::CLANG;
