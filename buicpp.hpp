@@ -309,32 +309,43 @@ template <typename E = Error> Err(E) -> Err<E>;
 #define ARRAYLIST_DEFAULT_CAPACITY 64
 #endif
 
-// TODO: Do not allocate items with new[]
-// use placement new and calling ctors manually instead
-// to avoid calling default constructors for nothing.
 template <typename T>
 class ArrayList {
+// If T has not implemented Rule of Five, assertions will fail
+static_assert(std::is_copy_constructible_v<T>, "ArrayList<T>: T must be copy constructible");
+static_assert(std::is_copy_assignable_v<T>, "ArrayList<T>: T must be copy assignable");
+static_assert(std::is_move_constructible_v<T>, "ArrayList<T>: T must be move constructible");
+static_assert(std::is_move_assignable_v<T>, "ArrayList<T>: T must be move assignable");
+static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructor");
 public:
   // Constructor / Destructor
   ArrayList(size_t init_capacity = ARRAYLIST_DEFAULT_CAPACITY) :
-    m_items(new T[init_capacity]), m_count(0), m_capacity(init_capacity) {}
-  ArrayList(std::initializer_list<T> list) :
-    m_items(new T[list.size()]), m_count(0), m_capacity(list.size())
-  {
-    for (const T& val : list)
-      m_items[m_count++] = val;
-  }
-  ~ArrayList() { delete[] m_items; }
+    m_items(static_cast<T*>(::operator new(init_capacity * sizeof(T)))),
+    m_count(0), m_capacity(init_capacity) {}
 
-  // Copy constructor
-  ArrayList(const ArrayList& other) :
-    m_items(new T[other.m_capacity]), m_count(other.m_count), m_capacity(other.m_capacity)
+  ArrayList(std::initializer_list<T> list) :
+     m_items(static_cast<T*>(::operator new(list.size() * sizeof(T)))),
+     m_count(0), m_capacity(list.size())
   {
-    std::copy(other.m_items, other.m_items + other.m_count, m_items);
+    construct_range(list.begin(), list.end());
+  }
+
+  ~ArrayList() {
+    for (size_t i = 0; i < m_count; i++) m_items[i].~T();
+    ::operator delete(m_items);
+  }
+
+  // Copy constructor (tight copy)
+  ArrayList(const ArrayList& other) :
+    m_items(static_cast<T*>(::operator new(other.m_count*sizeof(T)))),
+    m_count(0), m_capacity(other.m_count)
+  {
+    construct_range(other.m_items, other.m_items + other.m_count);
   }
 
   // Copy operator
   ArrayList& operator =(const ArrayList& other) {
+    if (this == &other) return *this;
     ArrayList<T> temp(other);
     std::swap(m_items, temp.m_items);
     std::swap(m_count, temp.m_count);
@@ -365,6 +376,19 @@ public:
   T& operator[](size_t idx) { return m_items[idx]; }
   const T& operator[](size_t idx) const { return m_items[idx]; }
 
+  // Equals operators
+  bool operator ==(const ArrayList& other) {
+    if (this == &other) return true;
+    if (m_count != other.m_count) return false;
+    for (size_t i = 0; i < m_count; ++i) {
+        if (!(m_items[i] == other.m_items[i])) return false;
+    }
+    return true;
+  }
+  bool operator !=(const ArrayList& other) {
+    return !(*this == other);
+  }
+
   // Reserve extra "extra" amount of capacity
   bool reserve(size_t extra);
 
@@ -382,6 +406,8 @@ public:
   bool remove_unord(size_t idx, T* out = nullptr);
 
   // shift "amount" elements in range [start, end) to left or right
+  // Overwrites elements on its way and it can cause holes and
+  // the holes are stay constructed but unspecified (moved-from state)
   bool shift_right(size_t start, size_t end, size_t amount = 1);
   bool shift_left(size_t start, size_t end, size_t amount = 1);
 
@@ -391,7 +417,7 @@ public:
     return &m_items[idx];
   }
 
-  // [begin, end) iterators
+  // [begin, end) iterators, c = const
   T* begin() const { return m_items; }
   T* end() const { return m_items + m_count; }
   const T* cbegin() const { return m_items; }
@@ -409,8 +435,15 @@ private:
   size_t m_count = 0;
   size_t m_capacity;
 
+  // Add an item to arbitrary idx (boundary checks available)
   template <typename U>
   bool add_impl(U&& item, size_t idx);
+
+  // Construct items in range [first, last) into this instance
+  // Uses placement new, exception safe
+  // (calls dtors of constructed items before and deallocates items pointer on exception)
+  template <typename It>
+  void construct_range(It first, It last);
 };
 
 template <typename T>
@@ -517,11 +550,30 @@ bool ArrayList<T>::reserve(size_t extra) {
   while (new_cap < needed)
     new_cap += (new_cap >> 1) + 1;
 
-  T* new_items = new T[new_cap];
-  for (size_t i = 0; i < m_count; i++)
-    new_items[i] = std::move(m_items[i]);
+  // allocate a new block and call move ctors (if move ctor of T throws, fallbacks to copy)
+  T* new_items = static_cast<T*>(::operator new(new_cap*sizeof(T)));
+  size_t constructed = 0;
+  // TODO: Move this logic to construct_move_range() function if this logic repeats in somewhere else
+#if __cpp_exceptions
+  try {
+#endif
+    for (size_t i = 0; i < m_count; i++) {
+      new (&new_items[i]) T(std::move_if_noexcept(m_items[i]));
+      constructed++;
+    }
+#if __cpp_exceptions
+  } catch(...) {
+    for (size_t i = 0; i < constructed; i++) new_items[i].~T();
+    ::operator delete(new_items);
+    throw;
+  }
+#endif
 
-  delete[] m_items;
+  // destruct all old elements and deallocate items ptr
+  for (size_t i = 0; i < m_count; ++i) m_items[i].~T();
+  ::operator delete(m_items);
+
+  // update fields
   m_items = new_items;
   m_capacity = new_cap;
   return true;
@@ -531,23 +583,34 @@ template <typename T>
 bool ArrayList<T>::shift_left(size_t start, size_t end, size_t amount) {
   if (start > end) return false;
   if (start < amount) return false;
+  if (end > m_count) return false;
   T* first = m_items + start;
   T* last  = m_items + end;
   T* d_first = m_items + start - amount;
-  while (first != last)
+  while (first != last) {
     *(d_first++) = std::move(*(first++));
+  }
   return true;
 }
 
 template <typename T>
 bool ArrayList<T>::shift_right(size_t start, size_t end, size_t amount) {
   if (start > end) return false;
+  if (end > m_count) return false;
   if (end + amount > m_capacity) return false;
   T* first = m_items + start;
   T* last  = m_items + end;
   T* d_last = m_items + end + amount;
-  while (first != last)
-    *(--d_last) = std::move(*(--last));
+  T* live_boundary = m_items + m_count;
+  // TODO: Make this exception-safe and add rollback mechanism
+  while (first != last) {
+    --last; --d_last;
+    if (d_last >= live_boundary) {
+      new (d_last) T(std::move_if_noexcept(*last));
+    } else {
+      *d_last = std::move(*last);
+    }
+  }
   return true;
 }
 
@@ -559,7 +622,8 @@ bool ArrayList<T>::add_impl(U&& item, size_t idx) {
   bool ok = shift_right(idx, m_count);
   assert(ok && "Shifting right in ArrayList<T>::add failed, this should never fail");
   (void)ok;
-  m_items[idx] = std::forward<U>(item);
+  if (idx == m_count) new (m_items + idx) T(std::forward<U>(item));
+  else m_items[idx] = std::forward<U>(item); // assignment bcs hole is constructed bcs of current shifting algorithm
   m_count++;
   return true;
 }
@@ -579,10 +643,12 @@ bool ArrayList<T>::push_many(Args&&... args) {
 template <typename T>
 bool ArrayList<T>::remove(size_t idx, T* out) {
   if (idx >= m_count) return false;
-  if (out != nullptr) *out = std::move(m_items[idx]);
+  // TODO: Make this exception-safe
+  if (out != nullptr) *out = std::move_if_noexcept(m_items[idx]);
   bool ok = shift_left(idx + 1, m_count);
   assert(ok && "Shifting left in ArrayList<T>::remove failed, this should never fail");
   (void)ok;
+  m_items[m_count - 1].~T();
   m_count--;
   return true;
 }
@@ -590,8 +656,9 @@ bool ArrayList<T>::remove(size_t idx, T* out) {
 template <typename T>
 bool ArrayList<T>::remove_unord(size_t idx, T* out) {
   if (idx >= m_count) return false;
-  if (out != nullptr) *out = std::move(m_items[idx]);
+  if (out != nullptr) *out = std::move_if_noexcept(m_items[idx]);
   if (idx != m_count - 1) m_items[idx] = std::move(m_items[m_count - 1]);
+  m_items[m_count - 1].~T();
   m_count--;
   return true;
 }
@@ -605,6 +672,25 @@ std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr) {
   }
   os << "]";
   return os;
+}
+
+template <typename T>
+template <typename It>
+void ArrayList<T>::construct_range(It first, It last) {
+#if __cpp_exceptions
+  try {
+#endif
+    for (; first != last; first++) {
+      new (m_items + m_count) T(*first);
+      m_count++;
+    }
+#if __cpp_exceptions
+  } catch(...) {
+    for (size_t i = 0; i < m_count; ++i) m_items[i].~T();
+    ::operator delete(m_items);
+    throw;
+  }
+#endif
 }
 // Dynamic Arrays implementation end
 
