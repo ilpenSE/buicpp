@@ -4,26 +4,17 @@
 #include "buicpp.hpp"
 using namespace buicpp;
 
-Either<std::string, int> func() {
-  if (1) return LeftOf<std::string>("paper flowers");
-  return RightOf<int>(21);
-}
-
 int main() {
-  func().match(
-  [](auto left){
-    std::printf("LEFT value = %s\n", left.c_str());
+  io::read_entire_directory("./").match(
+  [](auto root){
+    printf("root.name = %s\n", root.info.name.c_str());
+    for (size_t i = 0; i < root.files.count(); i++) {
+      const auto& entry = root.files[i];
+      printf("entry.name = %s\n", entry.name.c_str());
+    }
   },
-  [](auto right){
-    std::printf("RIGHT value = %d\n", right);
-  });
-
-  //////////////////////////////
-
-  Either<std::string, int> res = func();
-  if (res.is_left()) {
-    std::string s = std::move(res).left();
-    std::printf("stealed s = \"%s\"\n", s.c_str());
-    std::printf("orig res.left = \"%s\"\n", res.left().c_str());
+  [](auto err){
+    fprintf(stderr, "ERROR: cannot read_entire_directory: %s: %s\n", err.msg, strerror(err.code));
   }
+  );
 }

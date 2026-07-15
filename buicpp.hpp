@@ -34,11 +34,25 @@
   #define PLATFORM_WINDOWS 1
 #endif
 
+#define TODO(fmt, ...) \
+  do { \
+    fprintf(stderr, "%s:%d: TODO: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+    abort(); \
+  } while (0)
+
+#define UNREACHABLE(fmt, ...) \
+  do { \
+    fprintf(stderr, "%s:%d: UNREACHABLE: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+    __builtin_unreachable(); \
+  } while (0)
+
 #include <time.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #ifdef PLATFORM_POSIX
   #include <unistd.h>
   #include <sys/wait.h>
-  #include <sys/stat.h>
+  #include <dirent.h>
   namespace buicpp {
     inline int execvp(const char* file_name, const char* const* argv) {
       return ::execvp(file_name, const_cast<char* const*>(argv));
@@ -50,7 +64,7 @@
   #include <process.h>
   namespace buicpp {
     inline int execvp(const char* file_name, const char* const* argv) {
-      ::_execvp(file_name, argv);
+      return ::_execvp(file_name, argv);
     }
   }
 #endif
@@ -62,7 +76,25 @@
   #define NATIVE_COMPILER NULL /* Detect compiler in runtime */
 #endif
 
+#include <cstdint>
+
 namespace buicpp {
+
+using i8 = int8_t;
+using s8 = int8_t;
+using u8 = uint8_t;
+
+using i16 = int16_t;
+using s16 = int16_t;
+using u16 = uint16_t;
+
+using i32 = int32_t;
+using s32 = int32_t;
+using u32 = uint32_t;
+
+using i64 = int64_t;
+using s64 = int64_t;
+using u64 = uint64_t;
 
 // Either start
 struct LTag {};
@@ -400,10 +432,10 @@ public:
   template<typename... Args>
   bool push_many(Args&&... args);
 
-  // Remove element from idx (shifts array if you're not popping from back)
-  bool pop(T* out = nullptr) { return remove(m_count - 1, out); }
-  bool remove(size_t idx, T* out = nullptr);
-  bool remove_unord(size_t idx, T* out = nullptr);
+  // Remove element from idx (shifts array if you're not removing from back)
+  T pop() { return remove(m_count - 1); }
+  T remove(size_t idx);
+  T remove_unord(size_t idx);
 
   // shift "amount" elements in range [start, end) to left or right
   // Overwrites elements on its way and it can cause holes and
@@ -484,20 +516,58 @@ public:
 // TODO: Add recursive directory walker (returns array of files)
 // Those files can be folders (so it's cross-refering)
 namespace io {
+enum class FilePermission {
+  NONE = 0,
+  EXECUTE = 1 << 0,
+  WRITE = 1 << 1,
+  READ = 1 << 2,
+  Count = 4,
+};
+
+// TODO: Add FIFO and socket types
+enum class FileType {
+  UNKNOWN = 0,
+  REGULAR, // Normal text/binary files (-)
+  DIRECTORY, // Directories / Folders (d)
+  CHARDEV, // Character device (c)
+  BLOCKDEV, // Block device (b)
+  SYMLINK, // Symbolic links (l)
+  Count,
+};
+
+struct File {
+  FileType type;
+  std::string name;
+  size_t size;
+  u8 permissions;
+  time_t mtime;
+  std::string symlink_target;
+  ino_t inode;
+};
+
+struct Directory {
+  File info;
+  buicpp::ArrayList<buicpp::io::File> files;
+};
+
+buicpp::Result<buicpp::io::Directory> read_entire_directory(const char* dir_path);
+buicpp::Result<buicpp::io::Directory> read_directory(const char* dir_path);
+io::FileType dirent_to_filetype(unsigned char dt);
+
 bool mkdir_if_not_exists(const char* path);
 #ifdef PLATFORM_POSIX
 #define PATH_SEP '/'
 using stat_t = struct stat;
 inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
-inline bool stat(const char* file_path, struct stat *st) { return ::stat(file_path, st) == 0; }
+inline bool stat(const char* file_path, stat_t *st) { return ::stat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::access(file_path, mode) == 0; }
 
 #else // PLATFORM_WINDOWS
 #define PATH_SEP '\\'
+using stat_t = struct ::_stat;
 inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
-inline bool stat(const char* file_path, struct stat *st) { return ::_stat(file_path, st) == 0; }
+inline bool stat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
-using stat = struct ::_stat;
 #endif
 }
 
@@ -534,7 +604,9 @@ struct std::formatter<buicpp::ArrayList<T>> : std::formatter<std::string> {
     #define PATH_MAX 4096
   #endif
 #else
-  #define PATH_MAX __MAX_PATH
+  #ifndef PATH_MAX
+    #define PATH_MAX _MAX_PATH
+  #endif
 #endif
 
 namespace buicpp {
@@ -641,26 +713,26 @@ bool ArrayList<T>::push_many(Args&&... args) {
 }
 
 template <typename T>
-bool ArrayList<T>::remove(size_t idx, T* out) {
-  if (idx >= m_count) return false;
+T ArrayList<T>::remove(size_t idx) {
+  assert(idx >= m_count && "Boundary check failed in remove");
   // TODO: Make this exception-safe
-  if (out != nullptr) *out = std::move_if_noexcept(m_items[idx]);
+  T out = std::move_if_noexcept(m_items[idx]);
   bool ok = shift_left(idx + 1, m_count);
   assert(ok && "Shifting left in ArrayList<T>::remove failed, this should never fail");
   (void)ok;
   m_items[m_count - 1].~T();
   m_count--;
-  return true;
+  return out;
 }
 
 template <typename T>
-bool ArrayList<T>::remove_unord(size_t idx, T* out) {
-  if (idx >= m_count) return false;
-  if (out != nullptr) *out = std::move_if_noexcept(m_items[idx]);
+T ArrayList<T>::remove_unord(size_t idx) {
+  assert(idx >= m_count && "Boundary check failed in remove_unord");
+  T out = std::move_if_noexcept(m_items[idx]);
   if (idx != m_count - 1) m_items[idx] = std::move(m_items[m_count - 1]);
   m_items[m_count - 1].~T();
   m_count--;
-  return true;
+  return out;
 }
 
 template <typename T>
@@ -802,7 +874,7 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
 }
 
 time_t compare_mtimes(const char* f1, const char* f2) {
-  struct stat st_f1, st_f2;
+  buicpp::io::stat_t st_f1, st_f2;
   if (!buicpp::io::stat(f1, &st_f1)) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
     return false;
@@ -825,7 +897,7 @@ const char* to_string(buicpp::Compiler e) {
   case buicpp::Compiler::INTEL_CLASSIC: return "icpc";
   default: return "<invalid>";
   }
-  assert(false && "unreachable: const char* to_string(buicpp::Compiler e)");
+  UNREACHABLE("const char* to_string(buicpp::Compiler e)");
 }
 
 buicpp::Compiler compiler_from_cstr(const char* str) {
@@ -858,27 +930,76 @@ std::pair<const char*, buicpp::Compiler> get_native_compiler() {
   #else
     #error "Unknown compiler, define NATIVE_COMPILER or CC manually"
   #endif
-  assert(false && "unreachable: std::pair<const char*, buicpp::Compiler> get_native_compiler()");
+  UNREACHABLE("std::pair<const char*, buicpp::Compiler> get_native_compiler()");
 #endif
 }
 // Buic impl end
 
 namespace io {
-  bool mkdir_if_not_exists(const char* path) {
-    for (const char* p = path + 1; *p != '\0'; p++) {
-      if (*p == PATH_SEP) {
-        size_t i = (size_t)(p - path);
-        if (i >= PATH_MAX) return false;
-        char buf[PATH_MAX] = {0};
-        memcpy(buf, path, i);
-        if (!buicpp::io::mkdir(buf) && errno != EEXIST) return false;
-      }
+bool mkdir_if_not_exists(const char* path) {
+  for (const char* p = path + 1; *p != '\0'; p++) {
+    if (*p == PATH_SEP) {
+      size_t i = (size_t)(p - path);
+      if (i >= PATH_MAX) return false;
+      char buf[PATH_MAX] = {0};
+      memcpy(buf, path, i);
+      if (!buicpp::io::mkdir(buf) && errno != EEXIST) return false;
     }
-    return true;
   }
+  return true;
 }
 
+FileType dirent_to_filetype(unsigned char dt) {
+  switch (dt) {
+  case DT_DIR: return FileType::DIRECTORY;
+  case DT_REG: return FileType::REGULAR;
+  case DT_LNK: return FileType::SYMLINK;
+  case DT_CHR: return FileType::CHARDEV;
+  case DT_BLK: return FileType::BLOCKDEV;
+  case DT_UNKNOWN: return FileType::UNKNOWN;
+  default: assert(false && "Unsupported file type"); break;
+  }
+  UNREACHABLE("dirent_to_filetype");
 }
+
+// no recursion here
+Result<buicpp::io::Directory> read_directory(const char* dir_path) {
+  io::Directory dir = {{ .name=dir_path, .type=FileType::DIRECTORY }};
+
+  // open directory
+  DIR *dir_ptr = opendir(dir_path);
+  if (!dir_ptr) return Err({errno, dir_path});
+
+  // stat of directory itself
+  stat_t dir_stat;
+  if (!io::stat(dir_path, &dir_stat)) return Err({errno, dir_path});
+  dir.info.mtime = dir_stat.st_mtime;
+
+  // iterate directory (no recursive look)
+  struct dirent *entry;
+  while ((entry = readdir(dir_ptr)) != NULL) {
+    File f = {.name=entry->d_name};
+    f.type = io::dirent_to_filetype(entry->d_type);
+
+    stat_t file_stat;
+    if (!io::stat(f.name.c_str(), &file_stat)) return Err({errno, f.name.c_str()});
+    f.mtime = file_stat.st_mtime;
+
+    dir.files.push(f);
+  }
+
+  closedir(dir_ptr);
+  return Ok(dir);
+}
+
+// TODO: Implement this
+Result<buicpp::io::Directory> read_entire_directory(const char* dir_path) {
+  return read_directory(dir_path);
+}
+
+} // namespace io
+
+} // namespace buicpp
 
 #if __cplusplus >= 202002L || (defined(__cpp_lib_format) && __cpp_lib_format >= 201907L)
 template <typename T>
@@ -896,6 +1017,7 @@ auto std::formatter<buicpp::ArrayList<T>>::format(
   return std::formatter<std::string>::format(result, ctx);
 }
 #endif
+
 
 #endif // BUICPP_IMPLEMENTATION
 
