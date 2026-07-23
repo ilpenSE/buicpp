@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
 #endif
 
   cmd.push("-std=c++17");
-  cmd.push_many("-ggdb", "-O0");
+  cmd.push_many("-ggdb", "-O0", "-fno-exceptions");
 
 #if USE_MINGW == 0
   cmd.push("-fsanitize=address,undefined");

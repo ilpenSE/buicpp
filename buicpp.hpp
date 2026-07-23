@@ -23,6 +23,10 @@
 #include <cstddef>
 #include <format>
 #include <version>
+#include <cstdint>
+#include <type_traits>
+
+// TODO: Implement dirent for Windows
 
 #if defined(__unix__) || defined(__unix)
   #define PLATFORM_UNIX 1
@@ -46,6 +50,9 @@
     __builtin_unreachable(); \
   } while (0)
 
+#define BUICPP_PUBLIC
+#define BUICPP_PRIVATE static
+
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -62,6 +69,7 @@
   #include <direct.h>
   #include <io.h>
   #include <process.h>
+  #define S_ISLNK _S_ISLNK
   namespace buicpp {
     inline int execvp(const char* file_name, const char* const* argv) {
       return ::_execvp(file_name, argv);
@@ -76,25 +84,40 @@
   #define NATIVE_COMPILER NULL /* Detect compiler in runtime */
 #endif
 
-#include <cstdint>
+#ifdef BUICPP_NO_GLOBAL_NAMESPACE
+namespace buicpp {
+#endif
+using i8 = std::int8_t;
+using s8 = std::int8_t;
+using u8 = std::uint8_t;
+
+using i16 = std::int16_t;
+using s16 = std::int16_t;
+using u16 = std::uint16_t;
+
+using i32 = std::int32_t;
+using s32 = std::int32_t;
+using u32 = std::uint32_t;
+
+using i64 = std::int64_t;
+using s64 = std::int64_t;
+using u64 = std::uint64_t;
+#ifdef BUICPP_NO_GLOBAL_NAMESPACE
+}
+#endif
 
 namespace buicpp {
 
-using i8 = int8_t;
-using s8 = int8_t;
-using u8 = uint8_t;
+template <typename T, typename = void>
+struct is_equality_comparable : std::false_type {};
 
-using i16 = int16_t;
-using s16 = int16_t;
-using u16 = uint16_t;
+template <typename T>
+struct is_equality_comparable<T,
+       std::void_t<decltype(std::declval<const T&>() == std::declval<const T&>())>>
+       : std::true_type {};
 
-using i32 = int32_t;
-using s32 = int32_t;
-using u32 = uint32_t;
-
-using i64 = int64_t;
-using s64 = int64_t;
-using u64 = uint64_t;
+template <typename T>
+inline constexpr bool is_equality_comparable_v = is_equality_comparable<T>::value;
 
 // Either start
 struct LTag {};
@@ -102,6 +125,10 @@ struct RTag {};
 
 template <typename L, typename R>
 class Either {
+static_assert(std::is_move_constructible_v<L> || std::is_copy_constructible_v<L>,
+  "Either<L, R>: L must be movable or copyable");
+static_assert(std::is_move_constructible_v<R> || std::is_copy_constructible_v<R>,
+  "Either<L, R>: R must be movable or copyable");
 public:
   Either(const L& value, LTag) : m_is_left(true), m_left(value) {}
   Either(L&& value, LTag) : m_is_left(true), m_left(std::move(value)) {}
@@ -113,6 +140,10 @@ public:
   // copy ctor
   Either(const Either& other) : m_is_left(other.m_is_left)
   {
+    static_assert(std::is_copy_constructible_v<L>,
+      "Either<L, R>: copy constructor requires L to be copy constructible");
+    static_assert(std::is_copy_constructible_v<R>,
+      "Either<L, R>: copy constructor requires R to be copy constructible");
     if (other.m_is_left) new (&m_left) L(other.m_left);
     else new (&m_right) R(other.m_right);
   }
@@ -120,8 +151,14 @@ public:
   // copy assignment
   Either& operator =(const Either& other)
     noexcept(std::is_nothrow_copy_constructible_v<L> &&
-             std::is_nothrow_copy_constructible_v<R>)
+             std::is_nothrow_copy_assignable_v<L> &&
+             std::is_nothrow_copy_constructible_v<R> &&
+             std::is_nothrow_copy_assignable_v<R>)
   {
+    static_assert(std::is_copy_assignable_v<L> && std::is_copy_constructible_v<L>,
+      "Either<L, R>: copy constructor requires L to be copy constructible and assignable");
+    static_assert(std::is_copy_assignable_v<R> && std::is_copy_constructible_v<R>,
+      "Either<L, R>: copy constructor requires R to be copy constructible and assignable");
     if (this == &other) return *this; // prevent self-assignment
     // same sides (both are left or right)
     if (m_is_left == other.m_is_left) {
@@ -132,13 +169,13 @@ public:
 
     // different sides (one is left other is right or vice versa)
     if (other.m_is_left) {
-      L tmp(other.m_left); // it can throw exception here but this stays same
+      L tmp(other.m_left);
       destruct_active();
-      new (&m_left) L(std::move(tmp));
+      new (&m_left) L(std::move_if_noexcept(tmp));
     } else {
-      R tmp(other.m_right); // it can throw exception here but this stays same
+      R tmp(other.m_right);
       destruct_active();
-      new (&m_right) R(std::move(tmp));
+      new (&m_right) R(std::move_if_noexcept(tmp));
     }
 
     m_is_left = !m_is_left;
@@ -146,10 +183,13 @@ public:
   }
 
   // move ctor
-  Either(Either&& other) noexcept : m_is_left(other.m_is_left)
+  Either(Either&& other)
+    noexcept(std::is_nothrow_move_constructible_v<L> &&
+             std::is_nothrow_move_constructible_v<R>)
+    : m_is_left(other.m_is_left)
   {
-    if (other.m_is_left) new (&m_left) L(std::move(other.m_left));
-    else new (&m_right) R(std::move(other.m_right));
+    if (other.m_is_left) new (&m_left) L(std::move_if_noexcept(other.m_left));
+    else new (&m_right) R(std::move_if_noexcept(other.m_right));
   }
 
   // move assignment
@@ -170,12 +210,16 @@ public:
   }
 
   // Equals or not equals operator overloads
-  bool operator ==(const Either& other) const {
+  template <typename LL = L, typename RR = R>
+  std::enable_if_t<is_equality_comparable_v<LL> && is_equality_comparable_v<RR>, bool>
+  operator ==(const Either& other) const {
     if (m_is_left != other.m_is_left) return false;
     if (m_is_left) return m_left == other.m_left;
     else return m_right == other.m_right;
   }
-  bool operator !=(const Either& other) const {
+  template <typename LL = L, typename RR = R>
+  std::enable_if_t<is_equality_comparable_v<LL> && is_equality_comparable_v<RR>, bool>
+  operator !=(const Either& other) const {
     return !(*this == other);
   }
 
@@ -230,7 +274,7 @@ private:
     R m_right;
   };
   void destruct_active() { if (m_is_left) m_left.~L(); else m_right.~R(); }
-};
+}; // class Either
 
 // Left factory for Either
 template <typename L>
@@ -343,12 +387,9 @@ template <typename E = Error> Err(E) -> Err<E>;
 
 template <typename T>
 class ArrayList {
-// If T has not implemented Rule of Five, assertions will fail
-static_assert(std::is_copy_constructible_v<T>, "ArrayList<T>: T must be copy constructible");
-static_assert(std::is_copy_assignable_v<T>, "ArrayList<T>: T must be copy assignable");
-static_assert(std::is_move_constructible_v<T>, "ArrayList<T>: T must be move constructible");
-static_assert(std::is_move_assignable_v<T>, "ArrayList<T>: T must be move assignable");
-static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructor");
+static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructible");
+static_assert(std::is_move_constructible_v<T> || std::is_copy_constructible_v<T>,
+  "ArrayList<T>: T must be movable or copyable");
 public:
   // Constructor / Destructor
   ArrayList(size_t init_capacity = ARRAYLIST_DEFAULT_CAPACITY) :
@@ -359,6 +400,8 @@ public:
      m_items(static_cast<T*>(::operator new(list.size() * sizeof(T)))),
      m_count(0), m_capacity(list.size())
   {
+    static_assert(std::is_copy_constructible_v<T>,
+      "ArrayList<T>: initializer_list constructor requires T to be copy constructible");
     construct_range(list.begin(), list.end());
   }
 
@@ -372,11 +415,15 @@ public:
     m_items(static_cast<T*>(::operator new(other.m_count*sizeof(T)))),
     m_count(0), m_capacity(other.m_count)
   {
+    static_assert(std::is_copy_constructible_v<T>,
+      "ArrayList<T>: copy constructor requires T to be copy constructible");
     construct_range(other.m_items, other.m_items + other.m_count);
   }
 
   // Copy operator
   ArrayList& operator =(const ArrayList& other) {
+    static_assert(std::is_copy_assignable_v<T> && std::is_copy_constructible_v<T>,
+      "ArrayList<T>: copy assignment requires T to be copy constructible and assignable");
     if (this == &other) return *this;
     ArrayList<T> temp(other);
     std::swap(m_items, temp.m_items);
@@ -409,7 +456,9 @@ public:
   const T& operator[](size_t idx) const { return m_items[idx]; }
 
   // Equals operators
-  bool operator ==(const ArrayList& other) {
+  template <typename U = T>
+  std::enable_if_t<is_equality_comparable_v<U>, bool>
+  operator ==(const ArrayList& other) {
     if (this == &other) return true;
     if (m_count != other.m_count) return false;
     for (size_t i = 0; i < m_count; ++i) {
@@ -417,7 +466,10 @@ public:
     }
     return true;
   }
-  bool operator !=(const ArrayList& other) {
+
+  template <typename U = T>
+  std::enable_if_t<is_equality_comparable_v<U>, bool>
+  operator !=(const ArrayList& other) {
     return !(*this == other);
   }
 
@@ -476,10 +528,10 @@ private:
   // (calls dtors of constructed items before and deallocates items pointer on exception)
   template <typename It>
   void construct_range(It first, It last);
-};
+}; // class ArrayList<T>
 
 template <typename T>
-std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
+BUICPP_PUBLIC std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
 // Dynamic Arrays end
 
 // Buic start
@@ -487,9 +539,9 @@ enum class Compiler {
   UNKNOWN = 0, GCC, CLANG, MSVC, INTEL_LLVM, INTEL_CLASSIC, Count
 };
 
-const char* to_string(buicpp::Compiler e);
-buicpp::Compiler compiler_from_cstr(const char* str);
-std::pair<const char*, buicpp::Compiler> get_native_compiler();
+BUICPP_PUBLIC const char* to_string(Compiler e);
+BUICPP_PUBLIC Compiler compiler_from_cstr(const char* str);
+BUICPP_PUBLIC std::pair<const char*, Compiler> get_native_compiler();
 
 struct CmdRunOptions {
   bool is_log = true;
@@ -513,7 +565,6 @@ public:
   bool run(CmdRunOptions opts = {});
 };
 
-// TODO: Add recursive directory walker (returns array of files)
 // Those files can be folders (so it's cross-refering)
 namespace io {
 enum class FilePermission {
@@ -523,6 +574,25 @@ enum class FilePermission {
   READ = 1 << 2,
   Count = 4,
 };
+
+constexpr FilePermission operator |(FilePermission lhs, FilePermission rhs) {
+  return static_cast<FilePermission>(
+    static_cast<std::underlying_type_t<FilePermission>>(lhs) |
+    static_cast<std::underlying_type_t<FilePermission>>(rhs)
+  );
+}
+
+constexpr FilePermission& operator |=(FilePermission& lhs, FilePermission rhs) {
+  lhs = lhs | rhs;
+  return lhs;
+}
+
+constexpr FilePermission operator &(FilePermission lhs, FilePermission rhs) {
+  return static_cast<FilePermission>(
+    static_cast<std::underlying_type_t<FilePermission>>(lhs) &
+    static_cast<std::underlying_type_t<FilePermission>>(rhs)
+  );
+}
 
 // TODO: Add FIFO and socket types
 enum class FileType {
@@ -539,7 +609,7 @@ struct File {
   FileType type;
   std::string name;
   size_t size;
-  u8 permissions;
+  FilePermission permissions;
   time_t mtime;
   std::string symlink_target;
   ino_t inode;
@@ -547,12 +617,14 @@ struct File {
 
 struct Directory {
   File info;
-  buicpp::ArrayList<buicpp::io::File> files;
+  ArrayList<File> files;
 };
 
-buicpp::Result<buicpp::io::Directory> read_entire_directory(const char* dir_path);
-buicpp::Result<buicpp::io::Directory> read_directory(const char* dir_path);
-io::FileType dirent_to_filetype(unsigned char dt);
+BUICPP_PUBLIC const char* to_string(FileType ft);
+BUICPP_PUBLIC FilePermission to_filepermission(mode_t mode);
+BUICPP_PUBLIC Result<Directory> read_entire_directory(const char* dir_path);
+BUICPP_PUBLIC Result<Directory> read_directory(const char* dir_path);
+BUICPP_PUBLIC FileType dirent_to_filetype(unsigned char dt);
 
 bool mkdir_if_not_exists(const char* path);
 #ifdef PLATFORM_POSIX
@@ -560,28 +632,31 @@ bool mkdir_if_not_exists(const char* path);
 using stat_t = struct stat;
 inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
 inline bool stat(const char* file_path, stat_t *st) { return ::stat(file_path, st) == 0; }
+inline bool lstat(const char* file_path, stat_t *st) { return ::lstat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::access(file_path, mode) == 0; }
 
 #else // PLATFORM_WINDOWS
 #define PATH_SEP '\\'
 using stat_t = struct ::_stat;
+using mode_t = _mode_t;
 inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
 inline bool stat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
+inline bool lstat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
 #endif
 }
 
-time_t compare_mtimes(const char* f1, const char* f2);
+BUICPP_PUBLIC time_t compare_mtimes(const char* f1, const char* f2);
 
 #define REBUILD_URSELF(argc, argv, ...) \
   buicpp::_buic_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
 
 template<typename... Args>
-bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
+BUICPP_PUBLIC bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
 
 // Buic end
 
-}
+} // namespace buicpp
 
 #if __cplusplus >= 202002L
 template <typename T>
@@ -782,10 +857,10 @@ bool CommandBuilder::run(CmdRunOptions opts) {
   if (pid == 0) {
     // child
     auto arr = to_argv();
-    buicpp::execvp(arr[0], arr.items());
-    fprintf(stderr, "[BUIC/ERROR] ");
-    ::perror("execvp");
-    exit(1);
+    execvp(arr[0], arr.items());
+    std::fprintf(stderr, "[BUIC/ERROR] ");
+    std::perror("execvp");
+    std::exit(1);
   } else if (pid > 0) {
     // parent
     int wstatus = 0;
@@ -798,8 +873,8 @@ bool CommandBuilder::run(CmdRunOptions opts) {
       }
     }
   } else {
-    fprintf(stderr, "[BUIC/ERROR] ");
-    ::perror("fork");
+    std::fprintf(stderr, "[BUIC/ERROR] ");
+    std::perror("fork");
     return false;
   }
 
@@ -828,10 +903,10 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   snprintf(old_bin, sizeof old_bin, "%s.old", bin_name);
 
   bool needs_rebuild = false;
-  if (!buicpp::io::access(old_bin, F_OK)) {
+  if (!io::access(old_bin, F_OK)) {
     needs_rebuild = true;
   } else {
-    needs_rebuild = buicpp::compare_mtimes(file_name, bin_name) >= 0;
+    needs_rebuild = compare_mtimes(file_name, bin_name) >= 0;
   }
 
   if (!needs_rebuild) return true;
@@ -839,7 +914,7 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
 
   // Rename the binary to old one
   printf("INFO: Renaming: '%s' -> '%s'\n", bin_name, old_bin);
-  if (rename(bin_name, old_bin) != 0) {
+  if (std::rename(bin_name, old_bin) != 0) {
     fprintf(stderr, "ERROR: cannot rename '%s': %s\n", bin_name, strerror(errno));
     return false;
   }
@@ -868,33 +943,33 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   }
 
   // Run the new binary and exit this old one
-  buicpp::execvp(bin_name, argv);
+  execvp(bin_name, argv);
   fprintf(stderr, "ERROR: cannot run new binary: %s\n", strerror(errno));
   return false;
 }
 
 time_t compare_mtimes(const char* f1, const char* f2) {
-  buicpp::io::stat_t st_f1, st_f2;
+  io::stat_t st_f1, st_f2;
   if (!buicpp::io::stat(f1, &st_f1)) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
     return false;
   }
 
-  if (!buicpp::io::stat(f2, &st_f2)) {
+  if (!io::stat(f2, &st_f2)) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f2, strerror(errno));
     return false;
   }
   return (time_t)(st_f1.st_mtime - st_f2.st_mtime);
 }
 
-const char* to_string(buicpp::Compiler e) {
+const char* to_string(Compiler e) {
   switch (e) {
-  case buicpp::Compiler::UNKNOWN: return "<unknown>";
-  case buicpp::Compiler::GCC: return "gcc";
-  case buicpp::Compiler::CLANG: return "clang";
-  case buicpp::Compiler::MSVC: return "cl";
-  case buicpp::Compiler::INTEL_LLVM: return "icpx";
-  case buicpp::Compiler::INTEL_CLASSIC: return "icpc";
+  case Compiler::UNKNOWN: return "<unknown>";
+  case Compiler::GCC: return "gcc";
+  case Compiler::CLANG: return "clang";
+  case Compiler::MSVC: return "cl";
+  case Compiler::INTEL_LLVM: return "icpx";
+  case Compiler::INTEL_CLASSIC: return "icpc";
   default: return "<invalid>";
   }
   UNREACHABLE("const char* to_string(buicpp::Compiler e)");
@@ -936,6 +1011,18 @@ std::pair<const char*, buicpp::Compiler> get_native_compiler() {
 // Buic impl end
 
 namespace io {
+BUICPP_PRIVATE inline bool _read_link_into_str(const char *path, std::string *out) {
+#ifdef PLATFORM_WINDOWS
+  #error "_read_link_into_str is not implemented for windows"
+#else
+  char buf[PATH_MAX];
+  ssize_t n = readlink(path, buf, sizeof(buf));
+  if (n < 0) { return false; }
+  *out = std::string(buf, n);
+  return true;
+#endif
+}
+
 bool mkdir_if_not_exists(const char* path) {
   for (const char* p = path + 1; *p != '\0'; p++) {
     if (*p == PATH_SEP) {
@@ -943,7 +1030,7 @@ bool mkdir_if_not_exists(const char* path) {
       if (i >= PATH_MAX) return false;
       char buf[PATH_MAX] = {0};
       memcpy(buf, path, i);
-      if (!buicpp::io::mkdir(buf) && errno != EEXIST) return false;
+      if (!io::mkdir(buf) && errno != EEXIST) return false;
     }
   }
   return true;
@@ -962,9 +1049,21 @@ FileType dirent_to_filetype(unsigned char dt) {
   UNREACHABLE("dirent_to_filetype");
 }
 
+const char* to_string(FileType ft) {
+  switch(ft) {
+  case FileType::REGULAR: return "regular";
+  case FileType::DIRECTORY: return "directory";
+  case FileType::CHARDEV: return "character_device";
+  case FileType::BLOCKDEV: return "block_device";
+  case FileType::SYMLINK: return "symlink";
+  default: return "<invalid>";
+  }
+  UNREACHABLE("const char* to_string(buicpp::io::FileType e)");
+}
+
 // no recursion here
-Result<buicpp::io::Directory> read_directory(const char* dir_path) {
-  io::Directory dir = {{ .name=dir_path, .type=FileType::DIRECTORY }};
+Result<Directory> read_directory(const char* dir_path) {
+  io::Directory dir = {{ .type=FileType::DIRECTORY, .name=dir_path }};
 
   // open directory
   DIR *dir_ptr = opendir(dir_path);
@@ -972,18 +1071,40 @@ Result<buicpp::io::Directory> read_directory(const char* dir_path) {
 
   // stat of directory itself
   stat_t dir_stat;
-  if (!io::stat(dir_path, &dir_stat)) return Err({errno, dir_path});
+  if (!io::lstat(dir_path, &dir_stat)) {
+    closedir(dir_ptr);
+    return Err({errno, dir_path});
+  }
+
   dir.info.mtime = dir_stat.st_mtime;
+  dir.info.inode = dir_stat.st_ino;
+  dir.info.size = dir_stat.st_size;
+  dir.info.permissions = to_filepermission(dir_stat.st_mode);
+  if (S_ISLNK(dir_stat.st_mode)) {
+    if (!_read_link_into_str(dir_path, &dir.info.symlink_target))
+      return Err({errno, "readlink failed"});
+  }
 
   // iterate directory (no recursive look)
   struct dirent *entry;
   while ((entry = readdir(dir_ptr)) != NULL) {
-    File f = {.name=entry->d_name};
+    File f = {.name=std::move(entry->d_name)};
     f.type = io::dirent_to_filetype(entry->d_type);
 
     stat_t file_stat;
-    if (!io::stat(f.name.c_str(), &file_stat)) return Err({errno, f.name.c_str()});
+    char full_path[1024];
+    snprintf(full_path, sizeof(full_path), "%.*s%.*s",
+      (int)dir.info.name.size(), dir.info.name.c_str(), (int)f.name.size(), f.name.c_str());
+    if (!io::lstat(full_path, &file_stat)) {
+      closedir(dir_ptr);
+      return Err({errno, "stat failed"});
+    }
+
     f.mtime = file_stat.st_mtime;
+    f.inode = file_stat.st_ino;
+    f.size = file_stat.st_size;
+    f.permissions = to_filepermission(file_stat.st_mode);
+    if (f.type == FileType::SYMLINK) _read_link_into_str(full_path, &f.symlink_target);
 
     dir.files.push(f);
   }
@@ -992,9 +1113,22 @@ Result<buicpp::io::Directory> read_directory(const char* dir_path) {
   return Ok(dir);
 }
 
-// TODO: Implement this
-Result<buicpp::io::Directory> read_entire_directory(const char* dir_path) {
-  return read_directory(dir_path);
+FilePermission to_filepermission(mode_t mode){
+  FilePermission perms = FilePermission::NONE;
+#ifdef PLATFORM_WINDOWS
+  if (mode & _S_IREAD)  perms |= FilePermission::READ;
+  if (mode & _S_IWRITE) perms |= FilePermission::WRITE;
+  if (mode & _S_IEXEC)  perms |= FilePermission::EXECUTE;
+#else
+  if (mode & S_IRUSR) perms |= FilePermission::READ;
+  if (mode & S_IWUSR) perms |= FilePermission::WRITE;
+  if (mode & S_IXUSR) perms |= FilePermission::EXECUTE;
+#endif
+  return perms;
+}
+
+Result<Directory> read_entire_directory(const char* dir_path) {
+  TODO("read_entire_directory");
 }
 
 } // namespace io
