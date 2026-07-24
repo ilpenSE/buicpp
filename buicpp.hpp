@@ -119,23 +119,38 @@ struct is_equality_comparable<T,
 template <typename T>
 inline constexpr bool is_equality_comparable_v = is_equality_comparable<T>::value;
 
+struct DeferHelper {
+  template <typename F>
+  struct Guard {
+    F f;
+    ~Guard() { f(); }
+  };
+
+  template <typename F>
+  Guard<F> operator +(F f) { return Guard<F>{std::move(f)}; }
+};
+
+#define DEFER_CONCAT_(a, b) a##b
+#define DEFER_CONCAT(a, b) DEFER_CONCAT_(a, b)
+#define defer auto DEFER_CONCAT(_defer_, __LINE__) = DeferHelper{} + [&]()
+
 // Either start
 struct LTag {};
 struct RTag {};
 
 template <typename L, typename R>
 class Either {
-static_assert(std::is_move_constructible_v<L> || std::is_copy_constructible_v<L>,
-  "Either<L, R>: L must be movable or copyable");
-static_assert(std::is_move_constructible_v<R> || std::is_copy_constructible_v<R>,
-  "Either<L, R>: R must be movable or copyable");
 public:
-  Either(const L& value, LTag) : m_is_left(true), m_left(value) {}
-  Either(L&& value, LTag) : m_is_left(true), m_left(std::move(value)) {}
-  Either(const R& value, RTag) : m_is_left(false), m_right(value) {}
-  Either(R&& value, RTag) : m_is_left(false), m_right(std::move(value)) {}
+  Either(const L& value, LTag) : m_is_left(true), m_left(value) { check_traits(); }
+  Either(L&& value, LTag) : m_is_left(true), m_left(std::move(value)) { check_traits(); }
+  Either(const R& value, RTag) : m_is_left(false), m_right(value) { check_traits(); }
+  Either(R&& value, RTag) : m_is_left(false), m_right(std::move(value)) { check_traits(); }
 
-  ~Either() { destruct_active(); }
+  ~Either() {
+    static_assert(std::is_destructible_v<L>, "Either<L, R>: L must be destructible");
+    static_assert(std::is_destructible_v<R>, "Either<L, R>: R must be destructible");
+    destruct_active();
+  }
 
   // copy ctor
   Either(const Either& other) : m_is_left(other.m_is_left)
@@ -274,6 +289,13 @@ private:
     R m_right;
   };
   void destruct_active() { if (m_is_left) m_left.~L(); else m_right.~R(); }
+
+  static void check_traits() {
+    static_assert(std::is_move_constructible_v<L> || std::is_copy_constructible_v<L>,
+      "Either<L, R>: L must be movable or copyable");
+    static_assert(std::is_move_constructible_v<R> || std::is_copy_constructible_v<R>,
+      "Either<L, R>: R must be movable or copyable");
+  }
 }; // class Either
 
 // Left factory for Either
@@ -338,6 +360,8 @@ inline constexpr NoneTag None = {};
 struct Error {
   int code;
   const char* msg;
+  const char* file;
+  size_t line;
 };
 
 template <typename T, typename E = Error>
@@ -387,25 +411,29 @@ template <typename E = Error> Err(E) -> Err<E>;
 
 template <typename T>
 class ArrayList {
-static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructible");
-static_assert(std::is_move_constructible_v<T> || std::is_copy_constructible_v<T>,
-  "ArrayList<T>: T must be movable or copyable");
 public:
   // Constructor / Destructor
   ArrayList(size_t init_capacity = ARRAYLIST_DEFAULT_CAPACITY) :
     m_items(static_cast<T*>(::operator new(init_capacity * sizeof(T)))),
-    m_count(0), m_capacity(init_capacity) {}
+    m_count(0), m_capacity(init_capacity)
+  {
+    static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructible");
+    static_assert(std::is_move_constructible_v<T> || std::is_copy_constructible_v<T>,
+      "ArrayList<T>: T must be movable or copyable");
+  }
 
   ArrayList(std::initializer_list<T> list) :
      m_items(static_cast<T*>(::operator new(list.size() * sizeof(T)))),
      m_count(0), m_capacity(list.size())
   {
+    static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructible");
     static_assert(std::is_copy_constructible_v<T>,
       "ArrayList<T>: initializer_list constructor requires T to be copy constructible");
     construct_range(list.begin(), list.end());
   }
 
   ~ArrayList() {
+    static_assert(std::is_destructible_v<T>, "ArrayList<T>: T must be destructible");
     for (size_t i = 0; i < m_count; i++) m_items[i].~T();
     ::operator delete(m_items);
   }
@@ -567,7 +595,7 @@ public:
 
 // Those files can be folders (so it's cross-refering)
 namespace io {
-enum class FilePermission {
+enum class FilePermission : u8 {
   NONE = 0,
   EXECUTE = 1 << 0,
   WRITE = 1 << 1,
@@ -594,6 +622,19 @@ constexpr FilePermission operator &(FilePermission lhs, FilePermission rhs) {
   );
 }
 
+constexpr bool operator ==(FilePermission lhs, FilePermission rhs) {
+  return static_cast<std::underlying_type_t<FilePermission>>(lhs) ==
+         static_cast<std::underlying_type_t<FilePermission>>(rhs);
+}
+
+constexpr bool operator !=(FilePermission lhs, FilePermission rhs) {
+  return !(lhs == rhs);
+}
+
+constexpr bool is_set(FilePermission perms, FilePermission value) {
+  return (perms & value) != FilePermission::NONE;
+}
+
 // TODO: Add FIFO and socket types
 enum class FileType {
   UNKNOWN = 0,
@@ -608,28 +649,19 @@ enum class FileType {
 struct File {
   FileType type;
   std::string name;
+  std::string content;
   size_t size;
   FilePermission permissions;
   time_t mtime;
-  std::string symlink_target;
   ino_t inode;
-};
-
-struct Directory {
-  File info;
   ArrayList<File> files;
 };
-
-BUICPP_PUBLIC const char* to_string(FileType ft);
-BUICPP_PUBLIC FilePermission to_filepermission(mode_t mode);
-BUICPP_PUBLIC Result<Directory> read_entire_directory(const char* dir_path);
-BUICPP_PUBLIC Result<Directory> read_directory(const char* dir_path);
-BUICPP_PUBLIC FileType dirent_to_filetype(unsigned char dt);
 
 bool mkdir_if_not_exists(const char* path);
 #ifdef PLATFORM_POSIX
 #define PATH_SEP '/'
 using stat_t = struct stat;
+using mode_t = ::mode_t;
 inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
 inline bool stat(const char* file_path, stat_t *st) { return ::stat(file_path, st) == 0; }
 inline bool lstat(const char* file_path, stat_t *st) { return ::lstat(file_path, st) == 0; }
@@ -638,13 +670,29 @@ inline bool access(const char* file_path, int mode) { return ::access(file_path,
 #else // PLATFORM_WINDOWS
 #define PATH_SEP '\\'
 using stat_t = struct ::_stat;
-using mode_t = _mode_t;
+using mode_t = ::_mode_t;
 inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
 inline bool stat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
 inline bool lstat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
 #endif
-}
+
+// Conversions
+const char* to_string(FileType ft);
+FilePermission to_filepermission(mode_t mode);
+FileType to_filetype(unsigned char dt);
+FileType to_filetype(io::mode_t mode);
+
+// File utilities
+Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);
+Result<File> read_file_metadata(const char* file_path, bool follow_symlink = true);
+Result<File> read_entire_file(const char* file_path, bool follow_symlink = true);
+
+// Directory utilities
+Result<File> read_entire_directory(const char* dir_path);
+Result<File> read_directory(const char* dir_path);
+
+} // namespace io
 
 BUICPP_PUBLIC time_t compare_mtimes(const char* f1, const char* f2);
 
@@ -1029,14 +1077,128 @@ bool mkdir_if_not_exists(const char* path) {
       size_t i = (size_t)(p - path);
       if (i >= PATH_MAX) return false;
       char buf[PATH_MAX] = {0};
-      memcpy(buf, path, i);
+      std::memcpy(buf, path, i);
       if (!io::mkdir(buf) && errno != EEXIST) return false;
     }
   }
   return true;
 }
 
-FileType dirent_to_filetype(unsigned char dt) {
+// no recursion here
+Result<File> read_directory(const char* dir_path) {
+  // open directory
+  DIR *dir_ptr = opendir(dir_path);
+  if (!dir_ptr) return Err({errno, "opendir failed", __FILE__, __LINE__});
+  defer { closedir(dir_ptr); };
+
+  // stat of directory itself
+  auto ret = read_file_metadata(dir_path);
+  if (ret.is_err()) return Err(ret.error());
+  File dir = std::move(ret).value();
+
+  // iterate directory (no recursive look)
+  struct dirent *entry;
+  while ((entry = readdir(dir_ptr)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 ||
+        strcmp(entry->d_name, "..") == 0) continue;
+
+    // Construct full path
+    char full_path[PATH_MAX];
+    snprintf(full_path, sizeof(full_path), "%.*s/%s",
+      (int)dir.name.size(), dir.name.c_str(), entry->d_name);
+
+    // Read and push the file
+    auto ret = read_entire_file(full_path, false);
+    if (ret.is_err()) return Err(ret.error());
+    dir.files.push(std::move(ret).value());
+  }
+
+  return Ok(dir);
+}
+
+Result<File> read_entire_directory(const char* dir_path) {
+  static_assert(std::is_move_assignable_v<File>, "File is not move assignable!");
+  auto ret = read_directory(dir_path);
+  if (ret.is_err()) return std::move(ret);
+  File top = std::move(ret).value();
+  for (auto& f : top.files) {
+    if (f.type != FileType::DIRECTORY) continue;
+    auto ret = read_entire_directory(f.name.c_str());
+    if (ret.is_err()) return std::move(ret);
+    f = std::move(ret).value();
+  }
+  return Ok(std::move(top));
+}
+
+Result<std::string> read_file_content(const char* file_path, size_t file_size) {
+  std::FILE *f = std::fopen(file_path, "rb");
+  if (!f) return Err({errno, "fopen failed", __FILE__, __LINE__});
+  defer { std::fclose(f); };
+
+  if (file_size == 0) {
+    if (std::fseek(f, 0, SEEK_END) != 0) return Err({errno, "fseek failed", __FILE__, __LINE__});
+    long size = std::ftell(f);
+    if (size == -1L) return Err({errno, "ftell failed", __FILE__, __LINE__});
+    if (std::fseek(f, 0, SEEK_SET) != 0) return Err({errno, "fseek failed", __FILE__, __LINE__});
+    file_size = (size_t)size;
+  }
+
+  std::string result;
+  result.resize(file_size);
+  size_t n = std::fread(result.data(), 1, file_size, f);
+  if (n != file_size) {
+    if (feof(f) != 0 || ferror(f) != 0) return Err({errno, "fread failed", __FILE__, __LINE__});
+  }
+  result.resize(n);
+  return Ok(std::move(result));
+}
+
+Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
+  File result;
+  io::stat_t st;
+  if (follow_symlink) {
+    if (!io::stat(file_path, &st)) return Err({errno, "stat failed", __FILE__, __LINE__});
+  } else {
+    if (!io::lstat(file_path, &st)) return Err({errno, "lstat failed", __FILE__, __LINE__});
+  }
+
+  result.type = to_filetype((mode_t)st.st_mode);
+  result.name = std::string(file_path);
+  result.mtime = st.st_mtime;
+  result.inode = st.st_ino;
+  result.permissions = to_filepermission(st.st_mode);
+  result.size = st.st_size;
+
+  if (result.type == FileType::SYMLINK) {
+    if (!_read_link_into_str(file_path, &result.content))
+      return Err({errno, "readlink failed", __FILE__, __LINE__});
+  }
+  return Ok(std::move(result));
+}
+
+Result<File> read_entire_file(const char* file_path, bool follow_symlink) {
+  auto ret = read_file_metadata(file_path, follow_symlink);
+  if (ret.is_err()) return std::move(ret);
+  File result = std::move(ret).value();
+
+  if (result.type == FileType::REGULAR) {
+    auto ret = read_file_content(file_path, result.size);
+    if (ret.is_err()) return Err(ret.error());
+    result.content = std::move(ret).value();
+  }
+  return Ok(std::move(result));
+}
+
+FileType to_filetype(io::mode_t mode) {
+  if (S_ISREG(mode)) return FileType::REGULAR;
+  if (S_ISDIR(mode)) return FileType::DIRECTORY;
+  if (S_ISLNK(mode)) return FileType::SYMLINK;
+  if (S_ISCHR(mode)) return FileType::CHARDEV;
+  if (S_ISBLK(mode)) return FileType::BLOCKDEV;
+  return FileType::UNKNOWN;
+}
+
+FileType to_filetype(unsigned char dt) {
   switch (dt) {
   case DT_DIR: return FileType::DIRECTORY;
   case DT_REG: return FileType::REGULAR;
@@ -1046,71 +1208,7 @@ FileType dirent_to_filetype(unsigned char dt) {
   case DT_UNKNOWN: return FileType::UNKNOWN;
   default: assert(false && "Unsupported file type"); break;
   }
-  UNREACHABLE("dirent_to_filetype");
-}
-
-const char* to_string(FileType ft) {
-  switch(ft) {
-  case FileType::REGULAR: return "regular";
-  case FileType::DIRECTORY: return "directory";
-  case FileType::CHARDEV: return "character_device";
-  case FileType::BLOCKDEV: return "block_device";
-  case FileType::SYMLINK: return "symlink";
-  default: return "<invalid>";
-  }
-  UNREACHABLE("const char* to_string(buicpp::io::FileType e)");
-}
-
-// no recursion here
-Result<Directory> read_directory(const char* dir_path) {
-  io::Directory dir = {{ .type=FileType::DIRECTORY, .name=dir_path }};
-
-  // open directory
-  DIR *dir_ptr = opendir(dir_path);
-  if (!dir_ptr) return Err({errno, dir_path});
-
-  // stat of directory itself
-  stat_t dir_stat;
-  if (!io::lstat(dir_path, &dir_stat)) {
-    closedir(dir_ptr);
-    return Err({errno, dir_path});
-  }
-
-  dir.info.mtime = dir_stat.st_mtime;
-  dir.info.inode = dir_stat.st_ino;
-  dir.info.size = dir_stat.st_size;
-  dir.info.permissions = to_filepermission(dir_stat.st_mode);
-  if (S_ISLNK(dir_stat.st_mode)) {
-    if (!_read_link_into_str(dir_path, &dir.info.symlink_target))
-      return Err({errno, "readlink failed"});
-  }
-
-  // iterate directory (no recursive look)
-  struct dirent *entry;
-  while ((entry = readdir(dir_ptr)) != NULL) {
-    File f = {.name=std::move(entry->d_name)};
-    f.type = io::dirent_to_filetype(entry->d_type);
-
-    stat_t file_stat;
-    char full_path[1024];
-    snprintf(full_path, sizeof(full_path), "%.*s%.*s",
-      (int)dir.info.name.size(), dir.info.name.c_str(), (int)f.name.size(), f.name.c_str());
-    if (!io::lstat(full_path, &file_stat)) {
-      closedir(dir_ptr);
-      return Err({errno, "stat failed"});
-    }
-
-    f.mtime = file_stat.st_mtime;
-    f.inode = file_stat.st_ino;
-    f.size = file_stat.st_size;
-    f.permissions = to_filepermission(file_stat.st_mode);
-    if (f.type == FileType::SYMLINK) _read_link_into_str(full_path, &f.symlink_target);
-
-    dir.files.push(f);
-  }
-
-  closedir(dir_ptr);
-  return Ok(dir);
+  UNREACHABLE("to_filetype");
 }
 
 FilePermission to_filepermission(mode_t mode){
@@ -1127,8 +1225,16 @@ FilePermission to_filepermission(mode_t mode){
   return perms;
 }
 
-Result<Directory> read_entire_directory(const char* dir_path) {
-  TODO("read_entire_directory");
+const char* to_string(FileType ft) {
+  switch(ft) {
+  case FileType::REGULAR: return "regular";
+  case FileType::DIRECTORY: return "directory";
+  case FileType::CHARDEV: return "character_device";
+  case FileType::BLOCKDEV: return "block_device";
+  case FileType::SYMLINK: return "symlink";
+  default: return "<invalid>";
+  }
+  UNREACHABLE("const char* to_string(buicpp::io::FileType e)");
 }
 
 } // namespace io

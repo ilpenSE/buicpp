@@ -1,8 +1,6 @@
 #include <print>
-#include <stdio.h>
 
+// Example program
 int main() {
-  printf("Hello, World!\n");
   std::println("Hello, World!");
-  return 0;
 }
