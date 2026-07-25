@@ -1,3 +1,4 @@
 main
 buicpp
-buicpp.old
+*.old
+*.exe

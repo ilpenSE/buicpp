@@ -16,7 +16,6 @@ int main(int argc, char** argv) {
   cmd.push("clang++");
 #endif
 
-  cmd.push("-std=c++23");
   cmd.push_many("-ggdb", "-O0", "-fno-exceptions");
 
 #if USE_MINGW == 0

@@ -1,5 +1,4 @@
 #include <cinttypes>
-#include <print>
 #include <memory>
 
 #define BUICPP_IMPLEMENTATION
@@ -12,17 +11,17 @@ void print_tree(const io::File& file, std::string_view prefix = "", bool is_last
   if (pos != std::string_view::npos) display_name = display_name.substr(pos + 1);
 
   if (!is_root) {
-    std::print("{}{}{}", prefix, is_last ? "└── " : "├── ", display_name);
+    std::printf("%.*s%s%.*s", (int)prefix.size(), prefix.data(), is_last ? "└── " : "├── ", (int)display_name.size(), display_name.data());
   } else {
-    std::print("{}", display_name);
+    std::printf("%.*s", (int)display_name.size(), display_name.data());
   }
 
   if (file.type == io::FileType::DIRECTORY) {
-    std::println("/");
+    std::printf("/\n");
   } else if (file.type == io::FileType::SYMLINK) {
-    std::println(" -> {}", file.content);
+    std::printf(" -> %s\n", file.content.c_str());
   } else {
-    std::println(" ({} bytes)", file.size);
+    std::printf(" (%zu bytes)\n", file.size);
   }
 
   if (file.type == io::FileType::DIRECTORY) {
@@ -41,7 +40,7 @@ int main() {
   [](auto dir){
     print_tree(dir);
   }, [](auto err){
-    std::println("{}:{}: read_entire_directory failed: {}: {}\n",
+    std::printf("%s:%zu: read_entire_directory failed: %s: %s\n",
       err.file, err.line, err.msg, strerror(err.code));
   });
 }

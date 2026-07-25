@@ -4,6 +4,7 @@
 // No user/group, UID/GUID specific permissions or alignment now
 // No -a flag, shows everything except "." and ".."
 
+#include <ctime>
 #include <print>
 #define BUICPP_IMPLEMENTATION
 #include "buicpp.hpp"
@@ -61,7 +62,11 @@ const char* argv_shift(int* argc, char*** argv) {
 std::string to_ls_time(time_t mtime) {
   time_t now = std::time(nullptr);
   struct tm tm_buf;
+#ifdef PLATFORM_WINDOWS
+  localtime_s(&tm_buf, &mtime);
+#else
   localtime_r(&mtime, &tm_buf);
+#endif
 
   char buf[64];
   static constexpr time_t six_months = 60 * 60 * 24 * 30 * 6;
@@ -95,16 +100,17 @@ int main(int argc, char** argv) {
         std::string size_str;
         if (is_human) size_str = to_human_readable(f.size);
         else size_str = std::to_string(f.size);
-        std::println("{}{} {} {} {}",
-          to_char(f.type), to_permission_str(f.permissions), size_str, to_ls_time(f.mtime), f.name);
+        std::printf("%c%s %s %s %s\n",
+          to_char(f.type), to_permission_str(f.permissions).c_str(),
+          size_str.c_str(), to_ls_time(f.mtime).c_str(), f.name.c_str());
       }
     } else {
       for (const auto& f : dir.files) {
-        std::println("{}", f.name);
+        std::printf("%s\n", f.name.c_str());
       }
     }
   },
   [](auto err){
-    std::println("{}:{} cannot read directory: {}: {}", err.file, err.line, err.msg, strerror(err.code));
+    std::printf("%s:%zu cannot read directory: %s: %s", err.file, err.line, err.msg, strerror(err.code));
   });
 }

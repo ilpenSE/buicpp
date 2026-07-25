@@ -1,3 +1,4 @@
 buicpp
 *.old
 build
+*.exe

@@ -26,8 +26,6 @@
 #include <cstdint>
 #include <type_traits>
 
-// TODO: Implement dirent for Windows
-
 #if defined(__unix__) || defined(__unix)
   #define PLATFORM_UNIX 1
   #define PLATFORM_POSIX 1
@@ -50,9 +48,6 @@
     __builtin_unreachable(); \
   } while (0)
 
-#define BUICPP_PUBLIC
-#define BUICPP_PRIVATE static
-
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -66,10 +61,41 @@
     }
   }
 #else // PLATFORM_WINDOWS
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
   #include <direct.h>
   #include <io.h>
   #include <process.h>
-  #define S_ISLNK _S_ISLNK
+
+  #ifndef S_IFMT
+    #define S_IFMT   0xF000
+  #endif
+  #ifndef S_IFREG
+    #define S_IFREG  0x8000
+  #endif
+  #ifndef S_IFDIR
+    #define S_IFDIR  0x4000
+  #endif
+  #ifndef S_IFCHR
+    #define S_IFCHR  0x2000
+  #endif
+  #ifndef S_IFLNK
+    #define S_IFLNK  0xA000
+  #endif
+  #ifndef S_IFBLK
+    #define S_IFBLK  0x6000
+  #endif
+
+  #ifndef S_IRUSR
+    #define S_IRUSR 0x0100
+  #endif
+  #ifndef S_IWUSR
+    #define S_IWUSR 0x0080
+  #endif
+  #ifndef S_IXUSR
+    #define S_IXUSR 0x0040
+  #endif
+
   namespace buicpp {
     inline int execvp(const char* file_name, const char* const* argv) {
       return ::_execvp(file_name, argv);
@@ -141,6 +167,17 @@ struct RTag {};
 template <typename L, typename R>
 class Either {
 public:
+  // If left is default constructible, enable left otherwise enable right
+  template <typename LL = L,
+            typename = std::enable_if_t<std::is_default_constructible_v<LL>>>
+  Either() : m_is_left(true), m_left() {}
+
+  template <typename LL = L, typename RR = R,
+            typename = std::enable_if_t<!std::is_default_constructible_v<LL> &&
+                                        std::is_default_constructible_v<RR>>,
+            typename = void>
+  Either() : m_is_left(false), m_right() {}
+
   Either(const L& value, LTag) : m_is_left(true), m_left(value) { check_traits(); }
   Either(L&& value, LTag) : m_is_left(true), m_left(std::move(value)) { check_traits(); }
   Either(const R& value, RTag) : m_is_left(false), m_right(value) { check_traits(); }
@@ -559,7 +596,7 @@ private:
 }; // class ArrayList<T>
 
 template <typename T>
-BUICPP_PUBLIC std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
+std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
 // Dynamic Arrays end
 
 // Buic start
@@ -567,9 +604,9 @@ enum class Compiler {
   UNKNOWN = 0, GCC, CLANG, MSVC, INTEL_LLVM, INTEL_CLASSIC, Count
 };
 
-BUICPP_PUBLIC const char* to_string(Compiler e);
-BUICPP_PUBLIC Compiler compiler_from_cstr(const char* str);
-BUICPP_PUBLIC std::pair<const char*, Compiler> get_native_compiler();
+const char* to_string(Compiler e);
+Compiler compiler_from_cstr(const char* str);
+std::pair<const char*, Compiler> get_native_compiler();
 
 struct CmdRunOptions {
   bool is_log = true;
@@ -662,26 +699,69 @@ bool mkdir_if_not_exists(const char* path);
 #define PATH_SEP '/'
 using stat_t = struct stat;
 using mode_t = ::mode_t;
+using dirent_t = struct dirent;
 inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
 inline bool stat(const char* file_path, stat_t *st) { return ::stat(file_path, st) == 0; }
 inline bool lstat(const char* file_path, stat_t *st) { return ::lstat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::access(file_path, mode) == 0; }
+inline DIR *opendir(const char* path) { return ::opendir(path); }
+inline bool closedir(DIR *dir) { return ::closedir(dir) != 0; }
+inline dirent_t *readdir(DIR *dir) { return ::readdir(dir); }
+inline ssize_t readlink(const char *path, char *buf, size_t bufsz) { return ::readlink(path, buf, bufsz); }
 
 #else // PLATFORM_WINDOWS
 #define PATH_SEP '\\'
-using stat_t = struct ::_stat;
 using mode_t = ::_mode_t;
+struct stat_t {
+  i64 st_size = 0;
+  struct timespec st_mtim{};
+  struct timespec st_atim{};
+  struct timespec st_ctim{};
+  mode_t st_mode = 0;
+  u32 st_nlink = 0;
+  u8 st_ino = 0;
+  u8 st_gid = 0; // unnecessary
+  u8 st_uid = 0; // unnecessary
+  time_t st_atime;
+  time_t st_mtime;
+  time_t st_ctime;
+};
+static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink);
+
 inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
-inline bool stat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
-inline bool lstat(const char* file_path, stat_t *st) { return ::_stat(file_path, st) == 0; }
 inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
+inline bool lstat(const char* file_path, stat_t *st) { return stat_generic(file_path, st, false); }
+inline bool stat(const char* file_path, stat_t *st) { return stat_generic(file_path, st, true); }
+ssize_t readlink(const char *path, char *buf, size_t bufsz);
+
+// Dirent for Windows
+struct dirent_t {
+  // unsigned char d_type;
+  char d_name[256];
+};
+
+struct DIR {
+  HANDLE handle;
+  WIN32_FIND_DATAW data;
+  bool first;
+  dirent_t entry;
+};
+
+// wchar_t slop
+std::wstring utf8_to_wide(const char *s);
+void wide_to_utf8(const wchar_t *w, char *out, int out_size);
+void last_error_to_errno(); // GetLastError() -> errno
+struct timespec filetime_to_timespec(FILETIME ft);
+
+DIR *opendir(const char* path);
+bool closedir(DIR *dir);
+dirent_t *readdir(DIR *dir);
 #endif
 
 // Conversions
 const char* to_string(FileType ft);
 FilePermission to_filepermission(mode_t mode);
-FileType to_filetype(unsigned char dt);
-FileType to_filetype(io::mode_t mode);
+FileType to_filetype(mode_t mode);
 
 // File utilities
 Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);
@@ -689,18 +769,18 @@ Result<File> read_file_metadata(const char* file_path, bool follow_symlink = tru
 Result<File> read_entire_file(const char* file_path, bool follow_symlink = true);
 
 // Directory utilities
-Result<File> read_entire_directory(const char* dir_path);
-Result<File> read_directory(const char* dir_path);
+Result<File> read_entire_directory(const char* dir_path, bool read_content = false);
+Result<File> read_directory(const char* dir_path, bool read_content = false);
 
 } // namespace io
 
-BUICPP_PUBLIC time_t compare_mtimes(const char* f1, const char* f2);
+time_t compare_mtimes(const char* f1, const char* f2);
 
 #define REBUILD_URSELF(argc, argv, ...) \
   buicpp::_buic_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
 
 template<typename... Args>
-BUICPP_PUBLIC bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
+bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
 
 // Buic end
 
@@ -968,8 +1048,8 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   }
 
   // Construct and run rebuild command
-  std::pair<const char*, buicpp::Compiler> comp = buicpp::get_native_compiler();
-  if (comp.second == buicpp::Compiler::UNKNOWN) {
+  std::pair<const char*, Compiler> comp = get_native_compiler();
+  if (comp.second == Compiler::UNKNOWN) {
     fprintf(stderr, "ERROR: Unknown compiler: '%s'\n", comp.first);
     return false;
   }
@@ -998,7 +1078,7 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
 
 time_t compare_mtimes(const char* f1, const char* f2) {
   io::stat_t st_f1, st_f2;
-  if (!buicpp::io::stat(f1, &st_f1)) {
+  if (!io::stat(f1, &st_f1)) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
     return false;
   }
@@ -1023,17 +1103,17 @@ const char* to_string(Compiler e) {
   UNREACHABLE("const char* to_string(buicpp::Compiler e)");
 }
 
-buicpp::Compiler compiler_from_cstr(const char* str) {
-  if (strcmp(str, "cl") == 0) return buicpp::Compiler::MSVC;
-  if (strcmp(str, "g++") == 0) return buicpp::Compiler::GCC;
-  if (strcmp(str, "clang++") == 0) return buicpp::Compiler::CLANG;
-  if (strcmp(str, "icpx") == 0) return buicpp::Compiler::INTEL_LLVM;
-  if (strcmp(str, "icpc") == 0) return buicpp::Compiler::INTEL_CLASSIC;
-  return buicpp::Compiler::UNKNOWN;
+Compiler compiler_from_cstr(const char* str) {
+  if (strcmp(str, "cl") == 0) return Compiler::MSVC;
+  if (strcmp(str, "g++") == 0) return Compiler::GCC;
+  if (strcmp(str, "clang++") == 0) return Compiler::CLANG;
+  if (strcmp(str, "icpx") == 0) return Compiler::INTEL_LLVM;
+  if (strcmp(str, "icpc") == 0) return Compiler::INTEL_CLASSIC;
+  return Compiler::UNKNOWN;
 }
 
 // Get bootstrapped C++ compiler
-std::pair<const char*, buicpp::Compiler> get_native_compiler() {
+std::pair<const char*, Compiler> get_native_compiler() {
 #if NATIVE_COMPILER != NULL
   return {NATIVE_COMPILER, compiler_from_cstr(NATIVE_COMPILER)};
 #else
@@ -1041,15 +1121,15 @@ std::pair<const char*, buicpp::Compiler> get_native_compiler() {
   if (env && *env) return {env, compiler_from_cstr(env)};
 
   #if defined(__INTEL_LLVM_COMPILER)
-    return {"icpx", buicpp::Compiler::INTEL_LLVM};
+    return {"icpx", Compiler::INTEL_LLVM};
   #elif defined(__INTEL_COMPILER)
-    return {"icpc", buicpp::Compiler::INTEL_CLASSIC};
+    return {"icpc", Compiler::INTEL_CLASSIC};
   #elif defined(__clang__)
-    return {"clang++", buicpp::Compiler::CLANG};
+    return {"clang++", Compiler::CLANG};
   #elif defined(__GNUC__)
-    return {"g++", buicpp::Compiler::GCC};
+    return {"g++", Compiler::GCC};
   #elif defined(_MSC_VER)
-    return {"cl", buicpp::Compiler::MSVC};
+    return {"cl", Compiler::MSVC};
   #else
     #error "Unknown compiler, define NATIVE_COMPILER or CC manually"
   #endif
@@ -1059,18 +1139,6 @@ std::pair<const char*, buicpp::Compiler> get_native_compiler() {
 // Buic impl end
 
 namespace io {
-BUICPP_PRIVATE inline bool _read_link_into_str(const char *path, std::string *out) {
-#ifdef PLATFORM_WINDOWS
-  #error "_read_link_into_str is not implemented for windows"
-#else
-  char buf[PATH_MAX];
-  ssize_t n = readlink(path, buf, sizeof(buf));
-  if (n < 0) { return false; }
-  *out = std::string(buf, n);
-  return true;
-#endif
-}
-
 bool mkdir_if_not_exists(const char* path) {
   for (const char* p = path + 1; *p != '\0'; p++) {
     if (*p == PATH_SEP) {
@@ -1085,11 +1153,11 @@ bool mkdir_if_not_exists(const char* path) {
 }
 
 // no recursion here
-Result<File> read_directory(const char* dir_path) {
+Result<File> read_directory(const char* dir_path, bool read_content) {
   // open directory
-  DIR *dir_ptr = opendir(dir_path);
+  DIR *dir_ptr = io::opendir(dir_path);
   if (!dir_ptr) return Err({errno, "opendir failed", __FILE__, __LINE__});
-  defer { closedir(dir_ptr); };
+  defer { io::closedir(dir_ptr); };
 
   // stat of directory itself
   auto ret = read_file_metadata(dir_path);
@@ -1097,8 +1165,8 @@ Result<File> read_directory(const char* dir_path) {
   File dir = std::move(ret).value();
 
   // iterate directory (no recursive look)
-  struct dirent *entry;
-  while ((entry = readdir(dir_ptr)) != NULL) {
+  dirent_t *entry;
+  while ((entry = io::readdir(dir_ptr)) != NULL) {
     if (strcmp(entry->d_name, ".") == 0 ||
         strcmp(entry->d_name, "..") == 0) continue;
 
@@ -1108,7 +1176,9 @@ Result<File> read_directory(const char* dir_path) {
       (int)dir.name.size(), dir.name.c_str(), entry->d_name);
 
     // Read and push the file
-    auto ret = read_entire_file(full_path, false);
+    Result<File> ret;
+    if (read_content) ret = read_entire_file(full_path, false);
+    else ret = read_file_metadata(full_path, false);
     if (ret.is_err()) return Err(ret.error());
     dir.files.push(std::move(ret).value());
   }
@@ -1116,14 +1186,14 @@ Result<File> read_directory(const char* dir_path) {
   return Ok(dir);
 }
 
-Result<File> read_entire_directory(const char* dir_path) {
+Result<File> read_entire_directory(const char* dir_path, bool read_content) {
   static_assert(std::is_move_assignable_v<File>, "File is not move assignable!");
-  auto ret = read_directory(dir_path);
+  auto ret = read_directory(dir_path, read_content);
   if (ret.is_err()) return std::move(ret);
   File top = std::move(ret).value();
   for (auto& f : top.files) {
     if (f.type != FileType::DIRECTORY) continue;
-    auto ret = read_entire_directory(f.name.c_str());
+    auto ret = read_entire_directory(f.name.c_str(), read_content);
     if (ret.is_err()) return std::move(ret);
     f = std::move(ret).value();
   }
@@ -1170,8 +1240,10 @@ Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
   result.size = st.st_size;
 
   if (result.type == FileType::SYMLINK) {
-    if (!_read_link_into_str(file_path, &result.content))
-      return Err({errno, "readlink failed", __FILE__, __LINE__});
+    char buf[PATH_MAX];
+    ssize_t n = io::readlink(file_path, buf, sizeof(buf));
+    if (n < 0) { return Err({errno, "readlink failed"}); }
+    result.content = std::string(buf, n);
   }
   return Ok(std::move(result));
 }
@@ -1189,39 +1261,179 @@ Result<File> read_entire_file(const char* file_path, bool follow_symlink) {
   return Ok(std::move(result));
 }
 
-FileType to_filetype(io::mode_t mode) {
-  if (S_ISREG(mode)) return FileType::REGULAR;
-  if (S_ISDIR(mode)) return FileType::DIRECTORY;
-  if (S_ISLNK(mode)) return FileType::SYMLINK;
-  if (S_ISCHR(mode)) return FileType::CHARDEV;
-  if (S_ISBLK(mode)) return FileType::BLOCKDEV;
-  return FileType::UNKNOWN;
+#ifdef PLATFORM_WINDOWS
+std::wstring utf8_to_wide(const char *s) {
+  int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+  std::wstring ws(len, 0);
+  MultiByteToWideChar(CP_UTF8, 0, s, -1, ws.data(), len);
+  ws.resize(len - 1);
+  return ws;
 }
 
-FileType to_filetype(unsigned char dt) {
-  switch (dt) {
-  case DT_DIR: return FileType::DIRECTORY;
-  case DT_REG: return FileType::REGULAR;
-  case DT_LNK: return FileType::SYMLINK;
-  case DT_CHR: return FileType::CHARDEV;
-  case DT_BLK: return FileType::BLOCKDEV;
-  case DT_UNKNOWN: return FileType::UNKNOWN;
-  default: assert(false && "Unsupported file type"); break;
+void wide_to_utf8(const wchar_t *w, char *out, int out_size) {
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, out, out_size, nullptr, nullptr);
+}
+
+struct timespec filetime_to_timespec(FILETIME ft) {
+  ULARGE_INTEGER uli;
+  uli.LowPart  = ft.dwLowDateTime;
+  uli.HighPart = ft.dwHighDateTime;
+  // 1970 - 1601 difference
+  constexpr u64 EPOCH_DIFF = 116444736000000000ULL;
+  u64 ticks = uli.QuadPart - EPOCH_DIFF;
+  struct timespec ts;
+  ts.tv_sec = (time_t)(ticks / 10000000ULL);
+  ts.tv_nsec = (long)((ticks % 10000000ULL) * 100);
+  return ts;
+}
+
+void last_error_to_errno() {
+  DWORD err = GetLastError();
+  switch (err) {
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+    errno = ENOENT; break;
+  case ERROR_ACCESS_DENIED:
+    errno = EACCES; break;
+  case ERROR_ALREADY_EXISTS:
+  case ERROR_FILE_EXISTS:
+    errno = EEXIST; break;
+  case ERROR_INVALID_NAME:
+  case ERROR_BAD_PATHNAME:
+    errno = EINVAL; break;
+  case ERROR_TOO_MANY_OPEN_FILES:
+    errno = EMFILE; break;
+  case ERROR_DISK_FULL:
+    errno = ENOSPC; break;
+  case ERROR_NOT_READY:
+    errno = ENODEV; break;
+  case ERROR_DIRECTORY:
+    errno = ENOTDIR; break;
+    case ERROR_CANT_RESOLVE_FILENAME: // symlink loop
+    errno = ELOOP; break;
+  default:
+    errno = EIO;
+  }
+}
+
+DIR *opendir(const char* path) {
+  std::wstring wpath = utf8_to_wide(path);
+  std::wstring pattern = wpath + L"\\*";
+
+  DIR *dir = static_cast<DIR*>(std::malloc(sizeof(DIR)));
+  if (!dir) return nullptr;
+
+  dir->handle = FindFirstFileW(pattern.c_str(), &dir->data);
+  if (dir->handle == INVALID_HANDLE_VALUE) {
+    last_error_to_errno();
+    free(dir);
+    return nullptr;
+  }
+  dir->first = true;
+  return dir;
+}
+
+dirent_t *readdir(DIR *dir) {
+  if (!dir->first) {
+    if (!FindNextFileW(dir->handle, &dir->data)) {
+      last_error_to_errno();
+      return nullptr;
+    }
+  }
+  dir->first = false;
+  wide_to_utf8(dir->data.cFileName, dir->entry.d_name, sizeof(dir->entry.d_name));
+  return &dir->entry;
+}
+
+bool closedir(DIR *dir) {
+  if (!dir) return false;
+  if (!FindClose(dir->handle)) {
+    last_error_to_errno();
+    return false;
+  }
+  std::free(dir);
+  return true;
+}
+
+static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink) {
+  std::wstring wpath = utf8_to_wide(file_path);
+  auto flags = FILE_FLAG_BACKUP_SEMANTICS;
+  if (!follow_symlink) flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+
+  HANDLE h = CreateFileW(
+    wpath.c_str(),
+    FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr,
+    OPEN_EXISTING,
+    flags,
+    nullptr
+  );
+  if (h == INVALID_HANDLE_VALUE) {
+    last_error_to_errno();
+    return false;
+  }
+  defer { CloseHandle(h); };
+
+  BY_HANDLE_FILE_INFORMATION info;
+  if (!GetFileInformationByHandle(h, &info)) {
+    last_error_to_errno();
+    return false;
+  }
+
+  st->st_size = ((i64)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+  st->st_nlink = info.nNumberOfLinks;
+  st->st_ino = ((u64)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+  st->st_mtim = filetime_to_timespec(info.ftLastWriteTime);
+  st->st_atim = filetime_to_timespec(info.ftLastAccessTime);
+  st->st_ctim = filetime_to_timespec(info.ftCreationTime);
+
+  st->st_mtime = st->st_mtim.tv_sec;
+  st->st_atime = st->st_atim.tv_sec;
+  st->st_ctime = st->st_ctim.tv_sec;
+
+  DWORD attr = info.dwFileAttributes;
+  st->st_mode = 0;
+  if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+    st->st_mode |= S_IFDIR;
+  } else if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+    st->st_mode |= S_IFLNK;
+  } else {
+    st->st_mode |= S_IFREG;
+  }
+
+  st->st_mode |= 0444; // always readable
+  if ((attr & FILE_ATTRIBUTE_READONLY) != 0) {
+    st->st_mode |= 0222;
+  }
+  st->st_mode |= 0111; // always executable
+  return true;
+}
+
+ssize_t readlink(const char *path, char *buf, size_t bufsz) {
+  TODO("readlink");
+}
+#endif // PLATFORM_WINDOWS
+
+FileType to_filetype(io::mode_t mode) {
+  switch (mode & S_IFMT) {
+  case S_IFREG: return FileType::REGULAR;
+  case S_IFDIR: return FileType::DIRECTORY;
+  case S_IFCHR: return FileType::CHARDEV;
+#ifndef PLATFORM_WINDOWS
+  case S_IFLNK: return FileType::SYMLINK;
+  case S_IFBLK: return FileType::BLOCKDEV;
+#endif
+  default:      return FileType::UNKNOWN;
   }
   UNREACHABLE("to_filetype");
 }
 
 FilePermission to_filepermission(mode_t mode){
   FilePermission perms = FilePermission::NONE;
-#ifdef PLATFORM_WINDOWS
-  if (mode & _S_IREAD)  perms |= FilePermission::READ;
-  if (mode & _S_IWRITE) perms |= FilePermission::WRITE;
-  if (mode & _S_IEXEC)  perms |= FilePermission::EXECUTE;
-#else
   if (mode & S_IRUSR) perms |= FilePermission::READ;
   if (mode & S_IWUSR) perms |= FilePermission::WRITE;
   if (mode & S_IXUSR) perms |= FilePermission::EXECUTE;
-#endif
   return perms;
 }
 
