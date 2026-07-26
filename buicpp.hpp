@@ -16,25 +16,70 @@
   But they're not as production-ready as STL.
 */
 
+#ifdef _WIN32
+  #error "This library isn't ready for games"
+#endif
+
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <limits.h>
+#include <time.h>
+#include <dirent.h>
 #include <algorithm>
 #include <utility>
 #include <ostream>
-#include <cassert>
-#include <cstddef>
 #include <format>
 #include <version>
-#include <cstdint>
 #include <type_traits>
+
+namespace posix {
+  using ::mode_t;
+  using ::time_t;
+  using ::ino_t;
+  using ::ssize_t;
+  using ::off_t;
+  using ::DIR;
+  using ::dirent;
+  using ::stat;      // hem struct hem fonksiyon icin ayni isim, ikisi de gelir
+  using ::lstat;
+  using ::readlink;
+  using ::mkdir;
+  using ::opendir;
+  using ::closedir;
+  using ::readdir;
+  using ::access;
+  using ::fork;
+  using ::execvp;
+  using ::waitpid;
+
+  constexpr auto ifmt  = S_IFMT;
+  constexpr auto ifreg = S_IFREG;
+  constexpr auto ifdir = S_IFDIR;
+  constexpr auto ifchr = S_IFCHR;
+  constexpr auto iflnk = S_IFLNK;
+  constexpr auto ifblk = S_IFBLK;
+  constexpr auto iwusr = S_IWUSR;
+  constexpr auto irusr = S_IRUSR;
+  constexpr auto ixusr = S_IXUSR;
+  inline auto wifexited(int wstatus) { return WIFEXITED(wstatus); }
+  inline auto wexitstatus(int wstatus) { return WEXITSTATUS(wstatus); }
+} // namespace posix
 
 #if defined(__unix__) || defined(__unix)
   #define PLATFORM_UNIX 1
-  #define PLATFORM_POSIX 1
-#elif defined(__APPLE__) || defined(__MACH__)
+#endif
+
+#if defined(__linux__)
+  #define PLATFORM_LINUX 1
+#endif
+
+#if defined(__APPLE__) || defined(__MACH__)
   #define PLATFORM_APPLE 1
-  #define PLATFORM_POSIX 1
-#elif defined(_WIN32)
-  #define PLATFORM_WINDOWS 1
-  #define PLATFORM_OSTSDFG 1 // OSTSDFG = OS That Specifically Designed For Games
 #endif
 
 #define TODO(fmt, ...) \
@@ -48,61 +93,6 @@
     fprintf(stderr, "%s:%d: UNREACHABLE: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
     __builtin_unreachable(); \
   } while (0)
-
-#include <time.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#ifdef PLATFORM_POSIX
-  #include <unistd.h>
-  #include <sys/wait.h>
-  #include <dirent.h>
-  namespace buicpp {
-    inline int execvp(const char* file_name, const char* const* argv) {
-      return ::execvp(file_name, const_cast<char* const*>(argv));
-    }
-  }
-#else // PLATFORM_WINDOWS
-  #define WIN32_LEAN_AND_MEAN
-  #include <windows.h>
-  #include <direct.h>
-  #include <io.h>
-  #include <process.h>
-
-  #ifndef S_IFMT
-    #define S_IFMT   0xF000
-  #endif
-  #ifndef S_IFREG
-    #define S_IFREG  0x8000
-  #endif
-  #ifndef S_IFDIR
-    #define S_IFDIR  0x4000
-  #endif
-  #ifndef S_IFCHR
-    #define S_IFCHR  0x2000
-  #endif
-  #ifndef S_IFLNK
-    #define S_IFLNK  0xA000
-  #endif
-  #ifndef S_IFBLK
-    #define S_IFBLK  0x6000
-  #endif
-
-  #ifndef S_IRUSR
-    #define S_IRUSR 0x0100
-  #endif
-  #ifndef S_IWUSR
-    #define S_IWUSR 0x0080
-  #endif
-  #ifndef S_IXUSR
-    #define S_IXUSR 0x0040
-  #endif
-
-  namespace buicpp {
-    inline int execvp(const char* file_name, const char* const* argv) {
-      return ::_execvp(file_name, argv);
-    }
-  }
-#endif
 
 /*
   You can define NATIVE_COMPILER in command line while bootstrapping
@@ -679,8 +669,8 @@ enum class FileType {
   REGULAR, // Normal text/binary files (-)
   DIRECTORY, // Directories / Folders (d)
   CHARDEV, // Character device (c)
-  BLOCKDEV, // Block device (b) - not supported in game-os
-  SYMLINK, // Symbolic links (l) - not supported in game-os
+  BLOCKDEV, // Block device (b)
+  SYMLINK, // Symbolic links (l)
   Count,
 };
 
@@ -690,83 +680,17 @@ struct File {
   std::string content;
   size_t size;
   FilePermission permissions;
-  time_t mtime;
-  ino_t inode;
+  posix::time_t mtime;
+  posix::ino_t inode;
   ArrayList<File> files;
 };
 
 bool mkdir_if_not_exists(const char* path);
-#ifdef PLATFORM_POSIX
-#define PATH_SEP '/'
-using stat_t = struct stat;
-using mode_t = ::mode_t;
-using dirent_t = struct dirent;
-inline bool mkdir(const char* path) { return ::mkdir(path, 0775) == 0; }
-inline bool stat(const char* file_path, stat_t *st) { return ::stat(file_path, st) == 0; }
-inline bool lstat(const char* file_path, stat_t *st) { return ::lstat(file_path, st) == 0; }
-inline bool access(const char* file_path, int mode) { return ::access(file_path, mode) == 0; }
-inline DIR *opendir(const char* path) { return ::opendir(path); }
-inline bool closedir(DIR *dir) { return ::closedir(dir) != 0; }
-inline dirent_t *readdir(DIR *dir) { return ::readdir(dir); }
-inline ssize_t readlink(const char *path, char *buf, size_t bufsz) { return ::readlink(path, buf, bufsz); }
-
-#else // PLATFORM_WINDOWS
-#define PATH_SEP '\\'
-#ifdef _MODE_T_
-using mode_t = ::mode_t;
-#else
-using mode_t = ::_mode_t;
-#endif
-struct stat_t {
-  i64 st_size = 0;
-  struct timespec st_mtim{};
-  struct timespec st_atim{};
-  struct timespec st_ctim{};
-  mode_t st_mode = 0;
-  u32 st_nlink = 0;
-  u8 st_ino = 0;
-  u8 st_gid = 0; // unnecessary
-  u8 st_uid = 0; // unnecessary
-  time_t st_atime;
-  time_t st_mtime;
-  time_t st_ctime;
-};
-static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink);
-
-inline bool mkdir(const char* path) { return ::_mkdir(path) == 0; }
-inline bool access(const char* file_path, int mode) { return ::_access(file_path, mode) == 0; }
-inline bool lstat(const char* file_path, stat_t *st) { return stat_generic(file_path, st, false); }
-inline bool stat(const char* file_path, stat_t *st) { return stat_generic(file_path, st, true); }
-ssize_t readlink(const char *path, char *buf, size_t bufsz);
-
-// Dirent for Windows
-struct dirent_t {
-  // unsigned char d_type;
-  char d_name[256];
-};
-
-struct DIR {
-  HANDLE handle;
-  WIN32_FIND_DATAW data;
-  bool first;
-  dirent_t entry;
-};
-
-// wchar_t slop
-std::wstring utf8_to_wide(const char *s);
-int wide_to_utf8(const wchar_t *w, char *out, int out_size);
-void last_error_to_errno(); // GetLastError() -> errno
-struct timespec filetime_to_timespec(FILETIME ft);
-
-DIR *opendir(const char* path);
-bool closedir(DIR *dir);
-dirent_t *readdir(DIR *dir);
-#endif
 
 // Conversions
 const char* to_string(FileType ft);
-FilePermission to_filepermission(mode_t mode);
-FileType to_filetype(io::mode_t mode);
+FilePermission to_filepermission(posix::mode_t mode);
+FileType to_filetype(posix::mode_t mode);
 
 // File utilities
 Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);
@@ -779,7 +703,7 @@ Result<File> read_directory(const char* dir_path, bool read_content = false);
 
 } // namespace io
 
-time_t compare_mtimes(const char* f1, const char* f2);
+posix::time_t compare_mtimes(const char* f1, const char* f2);
 
 #define REBUILD_URSELF(argc, argv, ...) \
   buicpp::_buic_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
@@ -805,17 +729,6 @@ struct std::formatter<buicpp::ArrayList<T>> : std::formatter<std::string> {
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
-
-#ifdef PLATFORM_POSIX
-  #include <limits.h>
-  #ifndef PATH_MAX
-    #define PATH_MAX 4096
-  #endif
-#else
-  #ifndef PATH_MAX
-    #define PATH_MAX _MAX_PATH
-  #endif
-#endif
 
 namespace buicpp {
 
@@ -985,23 +898,23 @@ bool CommandBuilder::run(CmdRunOptions opts) {
     printf("\n");
   }
 
-#ifdef PLATFORM_POSIX
-  pid_t pid = ::fork();
+  pid_t pid = posix::fork();
   if (pid == 0) {
     // child
     auto arr = to_argv();
-    execvp(arr[0], arr.items());
+    posix::execvp(arr[0], const_cast<char* const*>(arr.items()));
     std::fprintf(stderr, "[BUIC/ERROR] ");
     std::perror("execvp");
     std::exit(1);
   } else if (pid > 0) {
     // parent
     int wstatus = 0;
-    ::waitpid(pid, &wstatus, 0);
-    if (WIFEXITED(wstatus)) {
-      int exit_code = WEXITSTATUS(wstatus);
+
+    posix::waitpid(pid, &wstatus, 0);
+    if (posix::wifexited(wstatus)) {
+      int exit_code = posix::wexitstatus(wstatus);
       if (exit_code != 0) {
-        fprintf(stderr, "[BUIC/ERROR] Command failed with code %d\n", exit_code);
+        std::fprintf(stderr, "[BUIC/ERROR] Command failed with code %d\n", exit_code);
         return false;
       }
     }
@@ -1010,20 +923,6 @@ bool CommandBuilder::run(CmdRunOptions opts) {
     std::perror("fork");
     return false;
   }
-
-#else // WINDOWS
-  auto arr = to_argv();
-  int ret = ::_spawnvp(_P_WAIT, arr[0], arr.items());
-  if (ret == -1) {
-    perror("_spawnvp");
-    return false;
-  }
-  if (ret != 0) {
-    fprintf(stderr, "[BUIC/ERROR] Command failed with code %lld\n",
-    static_cast<long long>(ret));
-    return false;
-  }
-#endif
 
   if (opts.is_reset) set_count(0);
   return true;
@@ -1036,7 +935,7 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   snprintf(old_bin, sizeof old_bin, "%s.old", bin_name);
 
   bool needs_rebuild = false;
-  if (!io::access(old_bin, F_OK)) {
+  if (posix::access(old_bin, F_OK) != 0) {
     needs_rebuild = true;
   } else {
     needs_rebuild = compare_mtimes(file_name, bin_name) >= 0;
@@ -1062,12 +961,7 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   cmd.push(comp.first);
   cmd.push(file_name);
   cmd.push_many(std::forward<Args>(args)...); // custom flags if you need
-
-  if (comp.second == buicpp::Compiler::MSVC) {
-    std::string out = "/Fe:";
-    out += bin_name;
-    cmd.push(std::move(out));
-  } else cmd.push_many("-o", bin_name);
+  cmd.push_many("-o", bin_name);
 
   // Run rebuild command
   if (!cmd.run()) {
@@ -1076,23 +970,23 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
   }
 
   // Run the new binary and exit this old one
-  execvp(bin_name, argv);
+  posix::execvp(bin_name, argv);
   fprintf(stderr, "ERROR: cannot run new binary: %s\n", strerror(errno));
   return false;
 }
 
-time_t compare_mtimes(const char* f1, const char* f2) {
-  io::stat_t st_f1, st_f2;
-  if (!io::stat(f1, &st_f1)) {
+posix::time_t compare_mtimes(const char* f1, const char* f2) {
+  struct posix::stat st_f1, st_f2;
+  if (posix::stat(f1, &st_f1) != 0) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
     return false;
   }
 
-  if (!io::stat(f2, &st_f2)) {
+  if (posix::stat(f2, &st_f2) != 0) {
     fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f2, strerror(errno));
     return false;
   }
-  return (time_t)(st_f1.st_mtime - st_f2.st_mtime);
+  return (posix::time_t)(st_f1.st_mtime - st_f2.st_mtime);
 }
 
 const char* to_string(Compiler e) {
@@ -1100,7 +994,6 @@ const char* to_string(Compiler e) {
   case Compiler::UNKNOWN: return "<unknown>";
   case Compiler::GCC: return "gcc";
   case Compiler::CLANG: return "clang";
-  case Compiler::MSVC: return "cl";
   case Compiler::INTEL_LLVM: return "icpx";
   case Compiler::INTEL_CLASSIC: return "icpc";
   default: return "<invalid>";
@@ -1109,7 +1002,6 @@ const char* to_string(Compiler e) {
 }
 
 Compiler compiler_from_cstr(const char* str) {
-  if (strcmp(str, "cl") == 0) return Compiler::MSVC;
   if (strcmp(str, "g++") == 0) return Compiler::GCC;
   if (strcmp(str, "clang++") == 0) return Compiler::CLANG;
   if (strcmp(str, "icpx") == 0) return Compiler::INTEL_LLVM;
@@ -1122,9 +1014,6 @@ std::pair<const char*, Compiler> get_native_compiler() {
 #if NATIVE_COMPILER != NULL
   return {NATIVE_COMPILER, compiler_from_cstr(NATIVE_COMPILER)};
 #else
-  const char* env = getenv("CC");
-  if (env && *env) return {env, compiler_from_cstr(env)};
-
   #if defined(__INTEL_LLVM_COMPILER)
     return {"icpx", Compiler::INTEL_LLVM};
   #elif defined(__INTEL_COMPILER)
@@ -1133,10 +1022,8 @@ std::pair<const char*, Compiler> get_native_compiler() {
     return {"clang++", Compiler::CLANG};
   #elif defined(__GNUC__)
     return {"g++", Compiler::GCC};
-  #elif defined(_MSC_VER)
-    return {"cl", Compiler::MSVC};
   #else
-    #error "Unknown compiler, define NATIVE_COMPILER or CC manually"
+    #error "Unknown compiler, define NATIVE_COMPILER manually"
   #endif
   UNREACHABLE("std::pair<const char*, buicpp::Compiler> get_native_compiler()");
 #endif
@@ -1146,12 +1033,12 @@ std::pair<const char*, Compiler> get_native_compiler() {
 namespace io {
 bool mkdir_if_not_exists(const char* path) {
   for (const char* p = path + 1; *p != '\0'; p++) {
-    if (*p == PATH_SEP) {
+    if (*p == '/') {
       size_t i = (size_t)(p - path);
       if (i >= PATH_MAX) return false;
       char buf[PATH_MAX] = {0};
       std::memcpy(buf, path, i);
-      if (!io::mkdir(buf) && errno != EEXIST) return false;
+      if (posix::mkdir(buf, 0775) != 0 && errno != EEXIST) return false;
     }
   }
   return true;
@@ -1160,9 +1047,9 @@ bool mkdir_if_not_exists(const char* path) {
 // no recursion here
 Result<File> read_directory(const char* dir_path, bool read_content) {
   // open directory
-  DIR *dir_ptr = io::opendir(dir_path);
+  DIR *dir_ptr = posix::opendir(dir_path);
   if (!dir_ptr) return Err({errno, "opendir failed", __FILE__, __LINE__});
-  defer { io::closedir(dir_ptr); };
+  defer { posix::closedir(dir_ptr); };
 
   // stat of directory itself
   auto ret = read_file_metadata(dir_path);
@@ -1170,8 +1057,8 @@ Result<File> read_directory(const char* dir_path, bool read_content) {
   File dir = std::move(ret).value();
 
   // iterate directory (no recursive look)
-  dirent_t *entry;
-  while ((entry = io::readdir(dir_ptr)) != NULL) {
+  struct posix::dirent *entry;
+  while ((entry = posix::readdir(dir_ptr)) != NULL) {
     if (strcmp(entry->d_name, ".") == 0 ||
         strcmp(entry->d_name, "..") == 0) continue;
 
@@ -1230,14 +1117,14 @@ Result<std::string> read_file_content(const char* file_path, size_t file_size) {
 
 Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
   File result;
-  io::stat_t st;
+  struct posix::stat st;
   if (follow_symlink) {
-    if (!io::stat(file_path, &st)) return Err({errno, "stat failed", __FILE__, __LINE__});
+    if (posix::stat(file_path, &st) != 0) return Err({errno, "stat failed", __FILE__, __LINE__});
   } else {
-    if (!io::lstat(file_path, &st)) return Err({errno, "lstat failed", __FILE__, __LINE__});
+    if (posix::lstat(file_path, &st) != 0) return Err({errno, "lstat failed", __FILE__, __LINE__});
   }
 
-  result.type = to_filetype((mode_t)st.st_mode);
+  result.type = to_filetype((posix::mode_t)st.st_mode);
   result.name = std::string(file_path);
   result.mtime = st.st_mtime;
   result.inode = st.st_ino;
@@ -1246,7 +1133,7 @@ Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
 
   if (result.type == FileType::SYMLINK) {
     char buf[PATH_MAX];
-    ssize_t n = io::readlink(file_path, buf, sizeof(buf));
+    ssize_t n = posix::readlink(file_path, buf, sizeof(buf));
     if (n < 0) { return Err({errno, "readlink failed"}); }
     result.content = std::string(buf, n);
   }
@@ -1266,190 +1153,13 @@ Result<File> read_entire_file(const char* file_path, bool follow_symlink) {
   return Ok(std::move(result));
 }
 
-#ifdef PLATFORM_WINDOWS
-std::wstring utf8_to_wide(const char *s) {
-  int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-  std::wstring ws(len, 0);
-  MultiByteToWideChar(CP_UTF8, 0, s, -1, ws.data(), len);
-  ws.resize(len - 1);
-  return ws;
-}
-
-int wide_to_utf8(const wchar_t *w, char *out, int out_size) {
-  return WideCharToMultiByte(CP_UTF8, 0, w, -1, out, out_size, nullptr, nullptr);
-}
-
-struct timespec filetime_to_timespec(FILETIME ft) {
-  ULARGE_INTEGER uli;
-  uli.LowPart  = ft.dwLowDateTime;
-  uli.HighPart = ft.dwHighDateTime;
-  // 1970 - 1601 difference
-  constexpr u64 EPOCH_DIFF = 116444736000000000ULL;
-  u64 ticks = uli.QuadPart - EPOCH_DIFF;
-  struct timespec ts;
-  ts.tv_sec = (time_t)(ticks / 10000000ULL);
-  ts.tv_nsec = (long)((ticks % 10000000ULL) * 100);
-  return ts;
-}
-
-void last_error_to_errno() {
-  DWORD err = GetLastError();
-  switch (err) {
-  case ERROR_FILE_NOT_FOUND:
-  case ERROR_PATH_NOT_FOUND:
-    errno = ENOENT; break;
-  case ERROR_ACCESS_DENIED:
-    errno = EACCES; break;
-  case ERROR_ALREADY_EXISTS:
-  case ERROR_FILE_EXISTS:
-    errno = EEXIST; break;
-  case ERROR_INVALID_NAME:
-  case ERROR_BAD_PATHNAME:
-    errno = EINVAL; break;
-  case ERROR_TOO_MANY_OPEN_FILES:
-    errno = EMFILE; break;
-  case ERROR_DISK_FULL:
-    errno = ENOSPC; break;
-  case ERROR_NOT_READY:
-    errno = ENODEV; break;
-  case ERROR_DIRECTORY:
-    errno = ENOTDIR; break;
-    case ERROR_CANT_RESOLVE_FILENAME: // symlink loop
-    errno = ELOOP; break;
-  default:
-    errno = EIO;
-  }
-}
-
-DIR *opendir(const char* path) {
-  std::wstring wpath = utf8_to_wide(path);
-  std::wstring pattern = wpath + L"\\*";
-
-  DIR *dir = static_cast<DIR*>(std::malloc(sizeof(DIR)));
-  if (!dir) return nullptr;
-
-  dir->handle = FindFirstFileW(pattern.c_str(), &dir->data);
-  if (dir->handle == INVALID_HANDLE_VALUE) {
-    last_error_to_errno();
-    free(dir);
-    return nullptr;
-  }
-  dir->first = true;
-  return dir;
-}
-
-dirent_t *readdir(DIR *dir) {
-  if (!dir->first) {
-    if (!FindNextFileW(dir->handle, &dir->data)) {
-      last_error_to_errno();
-      return nullptr;
-    }
-  }
-  dir->first = false;
-  wide_to_utf8(dir->data.cFileName, dir->entry.d_name, sizeof(dir->entry.d_name));
-  return &dir->entry;
-}
-
-bool closedir(DIR *dir) {
-  if (!dir) return false;
-  if (!FindClose(dir->handle)) {
-    last_error_to_errno();
-    return false;
-  }
-  std::free(dir);
-  return true;
-}
-
-static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink) {
-  std::wstring wpath = utf8_to_wide(file_path);
-  auto flags = FILE_FLAG_BACKUP_SEMANTICS;
-  if (!follow_symlink) flags |= FILE_FLAG_OPEN_REPARSE_POINT;
-
-  HANDLE h = CreateFileW(
-    wpath.c_str(), FILE_READ_ATTRIBUTES,
-    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-    nullptr, OPEN_EXISTING, flags, nullptr
-  );
-  if (h == INVALID_HANDLE_VALUE) {
-    last_error_to_errno();
-    return false;
-  }
-  defer { CloseHandle(h); };
-
-  BY_HANDLE_FILE_INFORMATION info;
-  if (!GetFileInformationByHandle(h, &info)) {
-    last_error_to_errno();
-    return false;
-  }
-
-  st->st_size = ((i64)info.nFileSizeHigh << 32) | info.nFileSizeLow;
-  st->st_nlink = info.nNumberOfLinks;
-  st->st_ino = ((u64)info.nFileIndexHigh << 32) | info.nFileIndexLow;
-  st->st_mtim = filetime_to_timespec(info.ftLastWriteTime);
-  st->st_atim = filetime_to_timespec(info.ftLastAccessTime);
-  st->st_ctim = filetime_to_timespec(info.ftCreationTime);
-
-  st->st_mtime = st->st_mtim.tv_sec;
-  st->st_atime = st->st_atim.tv_sec;
-  st->st_ctime = st->st_ctim.tv_sec;
-
-  DWORD attr = info.dwFileAttributes;
-  st->st_mode = 0;
-  if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-    st->st_mode |= S_IFDIR;
-  } else if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
-    st->st_mode |= S_IFLNK;
-  } else {
-    st->st_mode |= S_IFREG;
-  }
-
-  st->st_mode |= 0444; // always readable
-  if ((attr & FILE_ATTRIBUTE_READONLY) != 0) {
-    st->st_mode |= 0222;
-  }
-  st->st_mode |= 0111; // always executable
-  return true;
-}
-
-// Fuck MS-DOS api, this shit resolves link to the final absolute path
-// Not exact behavior of readlink() in POSIX because an OS that eats
-// 5 GB RAM idle, specifically designed for games named MS-DOS Windows
-// doesn't deserve real software API in C/C++
-// (Because games doesn't require reading a symlink)
-ssize_t readlink(const char *path, char *buf, size_t bufsz) {
-  std::wstring wpath = utf8_to_wide(path);
-  HANDLE h = CreateFileW(
-    wpath.c_str(), FILE_READ_ATTRIBUTES,
-    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr
-  );
-  if (h == INVALID_HANDLE_VALUE) {
-    last_error_to_errno();
-    return false;
-  }
-  defer { CloseHandle(h); };
-  DWORD needed = GetFinalPathNameByHandleW(h, nullptr, 0, FILE_NAME_NORMALIZED);
-  if (needed == 0) return -1;
-
-  std::wstring wout;
-  wout.resize(needed);
-  DWORD ret = GetFinalPathNameByHandleW(h, wout.data(), needed, FILE_NAME_NORMALIZED);
-  if (ret == 0 || ret >= needed) return -1;
-  wout.resize(ret);
-
-  int n = wide_to_utf8(wout.data(), buf, bufsz);
-  if (n != needed) return -1;
-  return (ssize_t)ret;
-}
-#endif // PLATFORM_WINDOWS
-
-FileType to_filetype(io::mode_t mode) {
-  switch (mode & S_IFMT) {
-  case S_IFREG: return FileType::REGULAR;
-  case S_IFDIR: return FileType::DIRECTORY;
-  case S_IFCHR: return FileType::CHARDEV;
-  case S_IFLNK: return FileType::SYMLINK;
-  case S_IFBLK: return FileType::BLOCKDEV;
+FileType to_filetype(posix::mode_t mode) {
+  switch (mode & posix::ifmt) {
+  case posix::ifreg: return FileType::REGULAR;
+  case posix::ifdir: return FileType::DIRECTORY;
+  case posix::ifchr: return FileType::CHARDEV;
+  case posix::iflnk: return FileType::SYMLINK;
+  case posix::ifblk: return FileType::BLOCKDEV;
   default:      return FileType::UNKNOWN;
   }
   UNREACHABLE("to_filetype");
@@ -1457,9 +1167,9 @@ FileType to_filetype(io::mode_t mode) {
 
 FilePermission to_filepermission(mode_t mode){
   FilePermission perms = FilePermission::NONE;
-  if (mode & S_IRUSR) perms |= FilePermission::READ;
-  if (mode & S_IWUSR) perms |= FilePermission::WRITE;
-  if (mode & S_IXUSR) perms |= FilePermission::EXECUTE;
+  if (mode & posix::irusr) perms |= FilePermission::READ;
+  if (mode & posix::iwusr) perms |= FilePermission::WRITE;
+  if (mode & posix::ixusr) perms |= FilePermission::EXECUTE;
   return perms;
 }
 

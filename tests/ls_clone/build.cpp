@@ -3,25 +3,18 @@
 using namespace buicpp;
 
 #define DEBUG 1
-#define USE_MINGW 0
 
 int main(int argc, char** argv) {
   REBUILD_URSELF(argc, argv);
   CommandBuilder cmd;
-#if USE_MINGW
-  cmd.push("x86_64-w64-mingw32-g++");
-#else
   cmd.push("clang++");
-#endif
 
-#if DEBUG
-  cmd.push_many("-O0", "-ggdb");
-  #if !USE_MINGW
-  cmd.push("-fsanitize=address,undefined");
-  #endif
+#if DEBUG == 1
+  cmd.push_many("-O0", "-ggdb", "-fsanitize=address,undefined");
 #else
   cmd.push_many("-O2", "-fno-exceptions");
 #endif
+
   cmd.push_many("-o", "main");
   cmd.push_many("main.cpp");
   if (!cmd.run()) return 1;

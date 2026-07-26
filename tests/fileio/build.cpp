@@ -1,23 +1,15 @@
 #define BUICPP_IMPLEMENTATION
 #include "buicpp.hpp"
 
-#define USE_MINGW 0
 #define DEBUG 1
 
 int main(int argc, char** argv) {
   REBUILD_URSELF(argc, argv);
   buicpp::CommandBuilder cmd;
-#if USE_MINGW == 1
-  cmd.push("x86_64-w64-mingw32-g++");
-#else
   cmd.push("clang++");
-#endif
 
 #if DEBUG == 1
-  cmd.push_many("-O0", "-ggdb");
-  #if USE_MINGW == 0
-  cmd.push("-fsanitize=address,undefined");
-  #endif
+  cmd.push_many("-O0", "-ggdb", "-fsanitize=address,undefined");
 #else
   cmd.push_many("-O2");
 #endif
