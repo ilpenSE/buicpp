@@ -34,6 +34,7 @@
   #define PLATFORM_POSIX 1
 #elif defined(_WIN32)
   #define PLATFORM_WINDOWS 1
+  #define PLATFORM_OSTSDFG 1 // OSTSDFG = OS That Specifically Designed For Games
 #endif
 
 #define TODO(fmt, ...) \
@@ -158,7 +159,7 @@ struct DeferHelper {
 
 #define DEFER_CONCAT_(a, b) a##b
 #define DEFER_CONCAT(a, b) DEFER_CONCAT_(a, b)
-#define defer auto DEFER_CONCAT(_defer_, __LINE__) = DeferHelper{} + [&]()
+#define defer auto DEFER_CONCAT(_defer_, __LINE__) = buicpp::DeferHelper{} + [&]()
 
 // Either start
 struct LTag {};
@@ -678,8 +679,8 @@ enum class FileType {
   REGULAR, // Normal text/binary files (-)
   DIRECTORY, // Directories / Folders (d)
   CHARDEV, // Character device (c)
-  BLOCKDEV, // Block device (b)
-  SYMLINK, // Symbolic links (l)
+  BLOCKDEV, // Block device (b) - not supported in game-os
+  SYMLINK, // Symbolic links (l) - not supported in game-os
   Count,
 };
 
@@ -711,7 +712,11 @@ inline ssize_t readlink(const char *path, char *buf, size_t bufsz) { return ::re
 
 #else // PLATFORM_WINDOWS
 #define PATH_SEP '\\'
+#ifdef _MODE_T_
+using mode_t = ::mode_t;
+#else
 using mode_t = ::_mode_t;
+#endif
 struct stat_t {
   i64 st_size = 0;
   struct timespec st_mtim{};
@@ -749,7 +754,7 @@ struct DIR {
 
 // wchar_t slop
 std::wstring utf8_to_wide(const char *s);
-void wide_to_utf8(const wchar_t *w, char *out, int out_size);
+int wide_to_utf8(const wchar_t *w, char *out, int out_size);
 void last_error_to_errno(); // GetLastError() -> errno
 struct timespec filetime_to_timespec(FILETIME ft);
 
@@ -761,7 +766,7 @@ dirent_t *readdir(DIR *dir);
 // Conversions
 const char* to_string(FileType ft);
 FilePermission to_filepermission(mode_t mode);
-FileType to_filetype(mode_t mode);
+FileType to_filetype(io::mode_t mode);
 
 // File utilities
 Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);
@@ -1270,8 +1275,8 @@ std::wstring utf8_to_wide(const char *s) {
   return ws;
 }
 
-void wide_to_utf8(const wchar_t *w, char *out, int out_size) {
-  WideCharToMultiByte(CP_UTF8, 0, w, -1, out, out_size, nullptr, nullptr);
+int wide_to_utf8(const wchar_t *w, char *out, int out_size) {
+  return WideCharToMultiByte(CP_UTF8, 0, w, -1, out, out_size, nullptr, nullptr);
 }
 
 struct timespec filetime_to_timespec(FILETIME ft) {
@@ -1361,13 +1366,9 @@ static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink)
   if (!follow_symlink) flags |= FILE_FLAG_OPEN_REPARSE_POINT;
 
   HANDLE h = CreateFileW(
-    wpath.c_str(),
-    FILE_READ_ATTRIBUTES,
+    wpath.c_str(), FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-    nullptr,
-    OPEN_EXISTING,
-    flags,
-    nullptr
+    nullptr, OPEN_EXISTING, flags, nullptr
   );
   if (h == INVALID_HANDLE_VALUE) {
     last_error_to_errno();
@@ -1410,8 +1411,35 @@ static bool stat_generic(const char* file_path, stat_t *st, bool follow_symlink)
   return true;
 }
 
+// Fuck MS-DOS api, this shit resolves link to the final absolute path
+// Not exact behavior of readlink() in POSIX because an OS that eats
+// 5 GB RAM idle, specifically designed for games named MS-DOS Windows
+// doesn't deserve real software API in C/C++
+// (Because games doesn't require reading a symlink)
 ssize_t readlink(const char *path, char *buf, size_t bufsz) {
-  TODO("readlink");
+  std::wstring wpath = utf8_to_wide(path);
+  HANDLE h = CreateFileW(
+    wpath.c_str(), FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr
+  );
+  if (h == INVALID_HANDLE_VALUE) {
+    last_error_to_errno();
+    return false;
+  }
+  defer { CloseHandle(h); };
+  DWORD needed = GetFinalPathNameByHandleW(h, nullptr, 0, FILE_NAME_NORMALIZED);
+  if (needed == 0) return -1;
+
+  std::wstring wout;
+  wout.resize(needed);
+  DWORD ret = GetFinalPathNameByHandleW(h, wout.data(), needed, FILE_NAME_NORMALIZED);
+  if (ret == 0 || ret >= needed) return -1;
+  wout.resize(ret);
+
+  int n = wide_to_utf8(wout.data(), buf, bufsz);
+  if (n != needed) return -1;
+  return (ssize_t)ret;
 }
 #endif // PLATFORM_WINDOWS
 
@@ -1420,10 +1448,8 @@ FileType to_filetype(io::mode_t mode) {
   case S_IFREG: return FileType::REGULAR;
   case S_IFDIR: return FileType::DIRECTORY;
   case S_IFCHR: return FileType::CHARDEV;
-#ifndef PLATFORM_WINDOWS
   case S_IFLNK: return FileType::SYMLINK;
   case S_IFBLK: return FileType::BLOCKDEV;
-#endif
   default:      return FileType::UNKNOWN;
   }
   UNREACHABLE("to_filetype");
@@ -1444,7 +1470,7 @@ const char* to_string(FileType ft) {
   case FileType::CHARDEV: return "character_device";
   case FileType::BLOCKDEV: return "block_device";
   case FileType::SYMLINK: return "symlink";
-  default: return "<invalid>";
+  default: return "<unknown>";
   }
   UNREACHABLE("const char* to_string(buicpp::io::FileType e)");
 }
