@@ -6,9 +6,9 @@
 
 #include <ctime>
 #include <print>
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
-using namespace buicpp;
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
+using namespace icl;
 
 char to_char(io::FileType type) {
   switch (type) {

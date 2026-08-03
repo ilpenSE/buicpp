@@ -1,35 +1,10 @@
-#ifndef BUICPP_HPP
-#define BUICPP_HPP
-
-/*
-  This is a C++ library for building C++ in C++.
-  You can steal this header and use it like a stb-style single-header library:
-  ```cpp
-    #define BUICPP_IMPLEMENTATION
-    #include "buicpp.hpp"
-    buicpp::CommandBuilder cmd;
-    cmd.push("clang++");
-    ...
-  ```
-
-  It has additional STL things (for example dynamic arrays) you can use them
-  But they're not as production-ready as STL.
-*/
-
-#ifdef _WIN32
-  #error "This library isn't ready for games"
-#endif
+/* SPDX-License-Identifier: MIT */
+#ifndef ICL_HPP
+#define ICL_HPP
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <limits.h>
-#include <time.h>
-#include <dirent.h>
 #include <algorithm>
 #include <utility>
 #include <ostream>
@@ -37,38 +12,11 @@
 #include <version>
 #include <type_traits>
 
-namespace posix {
-  using ::mode_t;
-  using ::time_t;
-  using ::ino_t;
-  using ::ssize_t;
-  using ::off_t;
-  using ::DIR;
-  using ::dirent;
-  using ::stat;      // hem struct hem fonksiyon icin ayni isim, ikisi de gelir
-  using ::lstat;
-  using ::readlink;
-  using ::mkdir;
-  using ::opendir;
-  using ::closedir;
-  using ::readdir;
-  using ::access;
-  using ::fork;
-  using ::execvp;
-  using ::waitpid;
+#if __cplusplus >= 202302L
+#include <print>
+#endif
 
-  constexpr auto ifmt  = S_IFMT;
-  constexpr auto ifreg = S_IFREG;
-  constexpr auto ifdir = S_IFDIR;
-  constexpr auto ifchr = S_IFCHR;
-  constexpr auto iflnk = S_IFLNK;
-  constexpr auto ifblk = S_IFBLK;
-  constexpr auto iwusr = S_IWUSR;
-  constexpr auto irusr = S_IRUSR;
-  constexpr auto ixusr = S_IXUSR;
-  inline auto wifexited(int wstatus) { return WIFEXITED(wstatus); }
-  inline auto wexitstatus(int wstatus) { return WEXITSTATUS(wstatus); }
-} // namespace posix
+#define PLATFORM_POSIX 1
 
 #if defined(__unix__) || defined(__unix)
   #define PLATFORM_UNIX 1
@@ -81,6 +29,24 @@ namespace posix {
 #if defined(__APPLE__) || defined(__MACH__)
   #define PLATFORM_APPLE 1
 #endif
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #define PLATFORM_WINDOWS 1
+  #undef PLATFORM_POSIX
+#endif
+
+#ifdef PLATFORM_WINDOWS
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <limits.h>
+#include <time.h>
+#include <dirent.h>
+#endif // PLATFORM_WINDOWS
 
 #define TODO(fmt, ...) \
   do { \
@@ -98,11 +64,11 @@ namespace posix {
   You can define NATIVE_COMPILER in command line while bootstrapping
 */
 #ifndef NATIVE_COMPILER
-  #define NATIVE_COMPILER NULL /* Detect compiler in runtime */
+  #define NATIVE_COMPILER NULL /* Detect compiler via macros */
 #endif
 
-#ifdef BUICPP_NO_GLOBAL_NAMESPACE
-namespace buicpp {
+#ifdef ICL_NO_GLOBAL_NAMESPACE
+namespace icl {
 #endif
 using i8 = std::int8_t;
 using s8 = std::int8_t;
@@ -119,37 +85,133 @@ using u32 = std::uint32_t;
 using i64 = std::int64_t;
 using s64 = std::int64_t;
 using u64 = std::uint64_t;
-#ifdef BUICPP_NO_GLOBAL_NAMESPACE
+#ifdef ICL_NO_GLOBAL_NAMESPACE
 }
 #endif
 
-namespace buicpp {
+namespace icl {
 
+/**
+ * @brief Portable C++23 and C++20 println syntax
+*/
+#if __cpp_lib_print // C++23's println
+using ::std::print;
+using ::std::println;
+template <typename... Args>
+inline void eprint(std::format_string<Args...> fmt, Args&&... args) {
+  print(stderr, fmt, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
+inline void eprintln(std::format_string<Args...> fmt, Args&&... args) {
+  println(stderr, fmt, std::forward<Args>(args)...);
+}
+
+#else // Our implementation of std::println
+  #if __cplusplus >= 202002L
+  template <typename... Args>
+  inline void print(FILE *stream, std::format_string<Args...> fmt, Args&&... args) {
+    std::string formatted = std::format(fmt, std::forward<Args>(args)...);
+    fwrite(formatted.c_str(), 1, formatted.size(), stream);
+  }
+
+  template <typename... Args>
+  inline void println(FILE *stream, std::format_string<Args...> fmt, Args&&... args) {
+    print(stream, fmt, std::forward<Args>(args)...);
+    #ifdef PLATFORM_WINDOWS
+    fputc('\r', stream);
+    #else
+    fputc('\n', stream);
+    #endif
+  }
+
+  template <typename... Args>
+  inline void println(std::format_string<Args...> fmt, Args&&... args) {
+    println(stdout, fmt, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args>
+  inline void eprint(std::format_string<Args...> fmt, Args&&... args) {
+    print(stderr, fmt, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args>
+  inline void eprintln(std::format_string<Args...> fmt, Args&&... args) {
+    println(stderr, fmt, std::forward<Args>(args)...);
+  }
+  #else
+    #error "print family requires >=C++20"
+  #endif // __cplusplus
+#endif // __cpp_lib_print
+
+/**
+ * @brief Determines whether a type provides a valid equality operator.
+ *
+ * Evaluates to `true` if the expression `a == b` is well-formed for
+ * two constant objects of type `T`; otherwise `false`.
+ *
+ * @tparam T Type to cast
+*/
 template <typename T, typename = void>
 struct is_equality_comparable : std::false_type {};
-
 template <typename T>
 struct is_equality_comparable<T,
-       std::void_t<decltype(std::declval<const T&>() == std::declval<const T&>())>>
+       std::void_t<decltype(std::declval<const T&>() == std::declval<const T&>()), bool>>
        : std::true_type {};
-
 template <typename T>
 inline constexpr bool is_equality_comparable_v = is_equality_comparable<T>::value;
 
+/**
+ * @brief Determines whether L type has overload append operator for R type.
+ *
+ * Evaluates to `true` if the expression `a += b` is well-formed for
+ * two constant objects of type `L` and `R`; otherwise `false`.
+ *
+ * @tparam L left hand side type (appended to)
+ * @tparam R right hand side type (to be appended)
+*/
+template <typename L, typename R, typename = void>
+struct is_appendable : std::false_type {};
+template <typename L, typename R>
+struct is_appendable<L, R,
+       std::void_t<decltype(std::declval<L&>() += std::declval<const R&>()), bool>>
+       : std::true_type {};
+template <typename L, typename R>
+inline constexpr bool is_appendable_v = is_appendable<L, R>::value;
+
+/**
+ * @def defer { ... };
+ * @brief Calls code inside the block whenever it reaches end of the scope
+ * @details
+ * It works like defer in Go language, but we have RAII in C++ so
+ * we're using it. Captures everything (lazy) from outer stack
+ * by reference. The macro expands itself with [&]() at the end.
+ *
+ * @code{.cpp}
+ * #include <dirent.h>
+ * bool func() {
+ *   DIR *dir = opendir("./my_dir");
+ *   defer { closedir(dir); };
+ *   while (struct dirent *entry = readdir(dir)) {
+ *     if (strcmp(entry->d_name, "top_secret_file.txt") == 0) return false;
+ *     icl::println("{}", entry->d_name);
+ *   }
+ *   return true;
+ * }
+ * @encode
+*/
 struct DeferHelper {
   template <typename F>
   struct Guard {
     F f;
     ~Guard() { f(); }
   };
-
   template <typename F>
   Guard<F> operator +(F f) { return Guard<F>{std::move(f)}; }
 };
-
-#define DEFER_CONCAT_(a, b) a##b
-#define DEFER_CONCAT(a, b) DEFER_CONCAT_(a, b)
-#define defer auto DEFER_CONCAT(_defer_, __LINE__) = buicpp::DeferHelper{} + [&]()
+#define _ICL_DEFER_CONCAT_(a, b) a##b
+#define _ICL_DEFER_CONCAT(a, b) _ICL_DEFER_CONCAT_(a, b)
+#define defer auto _ICL_DEFER_CONCAT(_defer_, __LINE__) = icl::DeferHelper{} + [&]()
 
 // Either start
 struct LTag {};
@@ -433,15 +495,11 @@ template <typename E = Error> Err(E) -> Err<E>;
 // Either end
 
 // Dynamic Arrays start
-#ifndef ARRAYLIST_DEFAULT_CAPACITY
-#define ARRAYLIST_DEFAULT_CAPACITY 64
-#endif
-
 template <typename T>
 class ArrayList {
 public:
   // Constructor / Destructor
-  ArrayList(size_t init_capacity = ARRAYLIST_DEFAULT_CAPACITY) :
+  ArrayList(size_t init_capacity = 32) :
     m_items(static_cast<T*>(::operator new(init_capacity * sizeof(T)))),
     m_count(0), m_capacity(init_capacity)
   {
@@ -551,6 +609,21 @@ public:
   bool shift_right(size_t start, size_t end, size_t amount = 1);
   bool shift_left(size_t start, size_t end, size_t amount = 1);
 
+  // Concatenates all types into one single big string
+  // T must be appendable to std::string otherwise
+  // this function will be ignored (SFINAE)
+  template <typename U = T>
+  std::enable_if_t<is_appendable_v<std::string, U>, std::string>
+  join(char delim) {
+    std::string out;
+    for (size_t i = 0; i < m_count; i++) {
+      const auto& item = (*this)[i];
+      out += item;
+      if (i != count() - 1) out += delim;
+    }
+    return out;
+  }
+
   // Access an element (with boundary check)
   T* at(size_t idx) {
     if (idx >= m_count) return nullptr;
@@ -590,7 +663,12 @@ template <typename T>
 std::ostream& operator<<(std::ostream& os, const ArrayList<T>& arr);
 // Dynamic Arrays end
 
-// Buic start
+inline const char* shift(int& argc, char**& argv) {
+  if (argc == 0) return nullptr;
+  argc--;
+  return *argv++;
+}
+
 enum class Compiler {
   UNKNOWN = 0, GCC, CLANG, MSVC, INTEL_LLVM, INTEL_CLASSIC, Count
 };
@@ -607,19 +685,262 @@ struct CmdRunOptions {
 class CommandBuilder : public ArrayList<std::string> {
 public:
   using ArrayList<std::string>::ArrayList;
-
-  // Return null-terminated const char* array (case for execvp/execve)
-  ArrayList<const char*> to_argv() const {
-    ArrayList<const char*> argv;
-    argv.reserve(count() + 1);
-    for (const auto& s : *this)
-      argv.push(s.c_str());
-    argv.push(nullptr);
-    return argv;
-  }
-
   bool run(CmdRunOptions opts = {});
 };
+
+/**
+ * @brief os namespace
+ * @details
+ * Assumes that you have x86_64/ARM64 CPU (64-bits)
+*/
+namespace os {
+#ifdef PLATFORM_WINDOWS
+  // sys/types.h
+  using mode_t = u32;
+  using uid_t = u32;
+  using gid_t = u32;
+  using ino_t = u64;
+  using ssize_t = intptr_t;
+  using off_t = i64;
+  using nlink_t = u32;
+
+  // time.h
+  using time_t = int;
+  struct timespec {
+    time_t tv_sec;
+    long   tv_nsec;
+  };
+
+  // sys/stat.h
+  struct stat {
+    mode_t st_mode;
+    off_t st_size;
+    uid_t st_uid;
+    gid_t st_gid;
+    ino_t st_ino;
+    nlink_t st_nlink;
+    time_t st_atime;
+    time_t st_mtime;
+    time_t st_ctime;
+    struct timespec st_atim;
+    struct timespec st_mtim;
+    struct timespec st_ctim;
+  };
+  int lstat(const char *path, struct stat *st);
+  int stat(const char *path, struct stat *st);
+
+  constexpr auto ifmt  = 0u;
+  constexpr auto ifreg = FILE_ATTRIBUTE_NORMAL;
+  constexpr auto ifdir = FILE_ATTRIBUTE_DIRECTORY;
+  constexpr auto iflnk = FILE_ATTRIBUTE_REPARSE_POINT;
+  constexpr auto ifblk = FILE_ATTRIBUTE_DEVICE;
+  constexpr auto ifchr = 0u;
+
+  // TODO: maybe change these while implementing windows api
+  // note that iwusr logic is reversed
+  constexpr auto iwusr = FILE_ATTRIBUTE_READONLY;
+  constexpr auto irusr = 0u;
+  constexpr auto ixusr = 0u;
+
+  constexpr auto f_ok = 0x0;
+  constexpr auto r_ok = 0x4;
+  constexpr auto w_ok = 0x2;
+  constexpr auto x_ok = 0x1;
+
+  // unistd.h
+  ssize_t readlink(const char *path, char *buf, size_t bufsz);
+  int access(const char *path, mode_t mode);
+  int mkdir(const char *path, mode_t mode);
+
+  // dirent.h
+  struct dirent {
+    unsigned char d_type;
+    char d_name[256];
+  };
+  struct DIR {
+    WIN32_FIND_DATAW data;
+    struct dirent entry;
+    HANDLE hFind;
+    bool first;
+  };
+  DIR *opendir(const char *dirname);
+  struct dirent *readdir(DIR *dirp);
+  int closedir(DIR *dirp);
+
+#else
+// sys/types.h
+using ::mode_t;
+using ::time_t;
+using ::ino_t;
+using ::ssize_t;
+using ::uid_t;
+using ::gid_t;
+
+// dirent.h
+using ::DIR;
+using ::dirent;
+using ::opendir;
+using ::closedir;
+using ::readdir;
+
+// unistd.h
+using ::readlink;
+using ::access;
+
+// sys/stat.h
+constexpr auto ifmt  = S_IFMT;
+constexpr auto ifreg = S_IFREG;
+constexpr auto ifdir = S_IFDIR;
+constexpr auto ifchr = S_IFCHR;
+constexpr auto iflnk = S_IFLNK;
+constexpr auto ifblk = S_IFBLK;
+
+constexpr auto iwusr = S_IWUSR;
+constexpr auto irusr = S_IRUSR;
+constexpr auto ixusr = S_IXUSR;
+
+constexpr auto f_ok = F_OK;
+constexpr auto r_ok = R_OK;
+constexpr auto w_ok = W_OK;
+constexpr auto x_ok = X_OK;
+
+using ::stat;
+using ::lstat;
+using ::mkdir;
+#endif
+
+enum class SignalType {
+  KILL, TERMINATE, INTERRUPT, STOP, CONTINUE, Count
+};
+
+#ifdef PLATFORM_POSIX
+inline int to_posix(SignalType st) {
+  switch (st) {
+  case SignalType::KILL: return SIGKILL;
+  case SignalType::TERMINATE: return SIGTERM;
+  case SignalType::INTERRUPT: return SIGINT;
+  case SignalType::STOP: return SIGSTOP;
+  case SignalType::CONTINUE: return SIGCONT;
+  default: return -1;
+  }
+  UNREACHABLE("icl::os::to_posix(icl::os::SignalType)");
+}
+#endif
+
+#ifdef PLATFORM_WINDOWS
+namespace win32 {
+int last_error_to_errno();
+int stat(const char *path, struct stat *st, bool follow_symlink);
+
+int wlen_from_cstr(const std::string& str);
+int wlen_from_cstr(const char *buffer);
+int wlen_from_cstr(const char *buffer, int size);
+
+int len_from_wstr(const std::wstring& wstr);
+int len_from_wstr(const wchar_t *wbuffer);
+int len_from_wstr(const wchar_t *wbuffer, int wsize);
+
+bool wide_to_utf8(const wchar_t* wbuffer, int wsize, char* buffer, int size);
+bool utf8_to_wide(const char* buffer, int size, wchar_t* wbuffer, int wsize);
+std::wstring to_wstring(const std::string& str);
+std::string to_string(const std::wstring& str);
+
+void cmdline_escape_if_needed(std::wstring& wstr);
+} // namespace win32
+#endif
+
+enum class ProcessState { INVALID, CONSTRUCTED, RUNNING, REAPED, Count };
+
+// processes (Abstracted API, fork + execvp + sys/wait.h)
+// TODO: Add stdin/stdout/stderr redirecting
+class Process {
+public:
+#ifdef PLATFORM_POSIX
+  template <typename... Args,
+    typename = std::enable_if_t<(std::is_convertible_v<Args, const char *> && ...)>>
+  Process(const char *file, Args... args) : m_argv(sizeof...(Args) + 2), m_state(ProcessState::CONSTRUCTED)
+  {
+    m_argv.push_many(file, args...);
+  }
+
+  Process(const char *file, int argc, char **argv) : m_argv(argc + 2), m_state(ProcessState::CONSTRUCTED)
+  {
+    m_argv.push(file);
+    for (size_t i = 0; i < argc; i++) {
+      m_argv.push(argv[i]);
+    }
+  }
+
+  Process(const CommandBuilder& cmd) : m_argv(cmd.count() + 1), m_state(ProcessState::CONSTRUCTED)
+  {
+    for (const auto& item : cmd) {
+      m_argv.push(item.c_str());
+    }
+  }
+
+#else // PLATFORM_WINDOWS
+  template <typename... Args,
+    typename = std::enable_if_t<(std::is_convertible_v<Args, const wchar_t *> && ...)>>
+  Process(const char *file, Args... args) : m_state(ProcessState::CONSTRUCTED)
+  {
+    std::wstring wfile = win32::to_wstring(file);
+    win32::cmdline_escape_if_needed(wfile);
+    m_cmdline += wfile;
+    m_cmdline += L' ';
+    ((win32::cmdline_escape_if_needed(args), m_cmdline += args, m_cmdline += L' '), ...);
+  }
+
+  Process(const char *file, int argc, char **argv) : m_state(ProcessState::CONSTRUCTED)
+  {
+    std::wstring wfile = win32::to_wstring(file);
+    win32::cmdline_escape_if_needed(wfile);
+    m_cmdline += wfile;
+    m_cmdline += L' ';
+
+    for (size_t i = 0; i < argc; i++) {
+      std::wstring warg = win32::to_wstring(argv[i]);
+      win32::cmdline_escape_if_needed(warg);
+      m_cmdline += warg;
+      m_cmdline += L' ';
+    }
+  }
+
+  Process(const CommandBuilder& cmd) : m_state(ProcessState::CONSTRUCTED)
+  {
+    for (const auto& elem : cmd) {
+      std::wstring welem = win32::to_wstring(elem);
+      win32::cmdline_escape_if_needed(welem);
+      m_cmdline += welem;
+      m_cmdline += L' ';
+    }
+  }
+#endif
+
+  ~Process() {
+#ifdef PLATFORM_WINDOWS
+    if (m_hProcess) CloseHandle(m_hProcess);
+#endif
+    if (m_state == ProcessState::RUNNING) wait();
+    m_state = ProcessState::INVALID;
+  }
+
+  ProcessState state() { return m_state; }
+  bool spawn();
+  bool signal(SignalType signal_type);
+  int wait();
+
+private:
+#ifdef PLATFORM_WINDOWS
+  std::wstring m_cmdline;
+  HANDLE m_hProcess = nullptr;
+#else
+  pid_t m_pid = 0;
+  ArrayList<const char *> m_argv;
+#endif
+  int m_exit_code = 0;
+  ProcessState m_state = ProcessState::INVALID;
+}; // class Process
+} // namespace os
 
 // Those files can be folders (so it's cross-refering)
 namespace io {
@@ -680,8 +1001,8 @@ struct File {
   std::string content;
   size_t size;
   FilePermission permissions;
-  posix::time_t mtime;
-  posix::ino_t inode;
+  os::time_t mtime;
+  os::ino_t inode;
   ArrayList<File> files;
 };
 
@@ -689,8 +1010,8 @@ bool mkdir_if_not_exists(const char* path);
 
 // Conversions
 const char* to_string(FileType ft);
-FilePermission to_filepermission(posix::mode_t mode);
-FileType to_filetype(posix::mode_t mode);
+FilePermission to_filepermission(os::mode_t mode);
+FileType to_filetype(os::mode_t mode);
 
 // File utilities
 Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);
@@ -703,26 +1024,27 @@ Result<File> read_directory(const char* dir_path, bool read_content = false);
 
 } // namespace io
 
-posix::time_t compare_mtimes(const char* f1, const char* f2);
-
 #define REBUILD_URSELF(argc, argv, ...) \
-  buicpp::_buic_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
+  icl::_rebuild_urself((argc), (argv), __FILE__, ##__VA_ARGS__)
 
 template<typename... Args>
-bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
+bool _rebuild_urself(int argc, char** argv, const char* file_name, Args... args);
 
-// Buic end
-
-} // namespace buicpp
+} // namespace icl
 
 #if __cplusplus >= 202002L
 template <typename T>
-struct std::formatter<buicpp::ArrayList<T>> : std::formatter<std::string> {
-  auto format(const buicpp::ArrayList<T>& arr, std::format_context& ctx) const -> decltype(ctx.out());
+struct std::formatter<icl::ArrayList<T>> : std::formatter<std::string> {
+  auto format(const icl::ArrayList<T>& arr, std::format_context& ctx) const -> decltype(ctx.out());
+};
+
+template <>
+struct std::formatter<icl::CommandBuilder> : std::formatter<std::string> {
+  auto format(const icl::CommandBuilder& cmd, std::format_context& ctx) const -> decltype(ctx.out());
 };
 #endif
 
-#ifdef BUICPP_IMPLEMENTATION
+#ifdef ICL_IMPLEMENTATION
 
 #include <cassert>
 #include <cstdio>
@@ -730,7 +1052,292 @@ struct std::formatter<buicpp::ArrayList<T>> : std::formatter<std::string> {
 #include <cerrno>
 #include <cstring>
 
-namespace buicpp {
+namespace icl {
+
+namespace os {
+#ifdef PLATFORM_WINDOWS
+// dirent.h
+DIR *opendir(const char *dirname) {
+  (void)dirname;
+  TODO("opendir");
+}
+
+struct dirent *readdir(DIR *dirp) {
+  (void)dirp;
+  TODO("readdir");
+}
+
+int closedir(DIR *dirp) {
+  (void)dirp;
+  TODO("closedir");
+}
+
+// sys/stat.h
+int lstat(const char *path, struct stat *st) { return win32::stat(path, st, false); }
+int stat(const char *path, struct stat *st) { return win32::stat(path, st, true); }
+
+// unistd.h
+ssize_t readlink(const char *path, char *buf, size_t bufsz) {
+  (void)(path); (void)(buf); (void)(bufsz);
+  TODO("readlink");
+}
+
+int access(const char *path, mode_t mode) {
+  (void)(path); (void)(mode);
+  TODO("access");
+}
+
+int mkdir(const char *path, mode_t mode) {
+  (void)path; (void)mode;
+  TODO("mkdir");
+}
+
+namespace win32 {
+int stat(const char *path, struct stat *st, bool follow_symlink) {
+  (void)path; (void)st; (void)follow_symlink;
+  TODO("stat");
+}
+
+int wlen_from_cstr(const std::string& str) { return wlen_from_cstr(str.c_str(), str.size()); }
+int wlen_from_cstr(const char *buffer) { return wlen_from_cstr(buffer, -1); }
+int wlen_from_cstr(const char *buffer, int size) {
+  return MultiByteToWideChar(CP_UTF8, 0, buffer, size, nullptr, 0);
+}
+
+int len_from_wstr(const std::wstring& wstr) { return len_from_wstr(wstr.c_str(), wstr.size()); }
+int len_from_wstr(const wchar_t *wbuffer) { return len_from_wstr(wbuffer, -1); }
+int len_from_wstr(const wchar_t *wbuffer, int wsize) {
+  return WideCharToMultiByte(CP_UTF8, 0, wbuffer, wsize, nullptr, 0, nullptr, nullptr);
+}
+
+bool wide_to_utf8(const wchar_t* wbuffer, int wsize, char* buffer, int size) {
+  int n = WideCharToMultiByte(CP_UTF8, 0, wbuffer, wsize, buffer, size, nullptr, nullptr);
+  if (n <= 0 || n > size) { errno = last_error_to_errno(); return false; }
+  return true;
+}
+
+bool utf8_to_wide(const char* buffer, int size, wchar_t* wbuffer, int wsize) {
+  int len = MultiByteToWideChar(CP_UTF8, 0, buffer, size, wbuffer, wsize);
+  if (len <= 0) { errno = last_error_to_errno(); return false; }
+  return true;
+}
+
+std::wstring to_wstring(const std::string& str) {
+  int n = wlen_from_cstr(str);
+  if (n <= 0) return {};
+  std::wstring ws(n, L'\0');
+  if (!utf8_to_wide(str.c_str(), static_cast<int>(str.size()), ws.data(), static_cast<int>(ws.size()))) return {};
+  return ws;
+}
+
+std::string to_string(const std::wstring& wstr) {
+  int n = len_from_wstr(wstr);
+  if (n <= 0) return {};
+  std::string str(n, '\0');
+  if (!wide_to_utf8(wstr.c_str(), static_cast<int>(wstr.size()), str.data(), static_cast<int>(str.size()))) return {};
+  return str;
+}
+
+int last_error_to_errno() {
+  switch (GetLastError()) {
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+    return ENOENT;
+  case ERROR_ACCESS_DENIED:
+    return EACCES;
+  case ERROR_ALREADY_EXISTS:
+  case ERROR_FILE_EXISTS:
+    return EEXIST;
+  case ERROR_INVALID_NAME:
+  case ERROR_BAD_PATHNAME:
+    return EINVAL;
+  case ERROR_TOO_MANY_OPEN_FILES:
+    return EMFILE;
+  case ERROR_DISK_FULL:
+    return ENOSPC;
+  case ERROR_NOT_READY:
+    return ENODEV;
+  case ERROR_DIRECTORY:
+    return ENOTDIR;
+    case ERROR_CANT_RESOLVE_FILENAME: // symlink loop
+    return ELOOP;
+  default:
+    return EIO;
+  }
+  UNREACHABLE("icl::os::win32::last_error_to_errno");
+}
+
+void cmdline_escape_if_needed(std::wstring& ws) {
+  if (ws.empty()) { ws = L"\"\""; return; }
+
+  bool need_escaping = false;
+  bool need_quotes = false;
+  for (wchar_t ch : ws) {
+    if (ch == L'\\', ch == L'"') need_escaping = true;
+    if (ch == L'\t', ch == L' ') need_quotes = true;
+  }
+
+  if (need_quotes) ws.push_back(L'"');
+
+  size_t backslashes = 0;
+  for (wchar_t c : ws) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      ws.append(backslashes * 2 + 1, L'\\');
+      ws.push_back(L'"');
+      backslashes = 0;
+    } else {
+      ws.append(backslashes, L'\\');
+      backslashes = 0;
+      ws.push_back(c);
+    }
+  }
+
+  if (need_escaping) ws.append(backslashes * 2, L'\\');
+  else ws.append(backslashes, L'\\');
+
+  if (need_quotes) ws.push_back(L'"');
+}
+} // namespace win32
+#endif // PLATFORM_WINDOWS
+
+bool Process::spawn() {
+  if (m_state != ProcessState::CONSTRUCTED &&
+      m_state != ProcessState::REAPED) {
+    eprintln("ERROR: Proces::spawn() called in invalid state");
+    errno = EINVAL;
+
+    // user-friendly error messages
+    eprint("  Hint:");
+    switch (m_state) {
+    case ProcessState::RUNNING: {
+      eprintln("process is already running, reape or signal it "
+               "by calling wait() or signal() then spawn() another one");
+    } break;
+    case ProcessState::INVALID: {
+      eprintln("process class is in weird state maybe constructor failed?");
+    } break;
+    default: UNREACHABLE("ProcessState switch-case in Process::spawn()");
+    }
+
+    return false;
+  }
+
+  #ifdef PLATFORM_POSIX
+  pid_t pid = ::fork();
+  if (pid == 0) { // child
+    m_argv.push(nullptr);
+    ::execvp(m_argv[0], const_cast<char *const*>(m_argv.items()));
+    eprintln("ERROR: execvp failed: {}", strerror(errno));
+    std::exit(1);
+  } else if (pid > 0) { // parent
+    m_pid = pid;
+  } else {
+    eprintln("ERROR: fork failed: {}", strerror(errno));
+    return false;
+  }
+
+#else // PLATFORM_WINDOWS
+  STARTUPINFOW siStartupInfo{};
+  siStartupInfo.cb = sizeof(siStartupInfo);
+  PROCESS_INFORMATION siProcessInformation{};
+
+  BOOL ret = CreateProcessW(nullptr, m_cmdline.data(),
+                            nullptr, nullptr, false,
+                            0, nullptr, nullptr,
+                            &siStartupInfo, &siProcessInformation);
+  if (!ret) { errno = win32::last_error_to_errno(); return false; }
+
+  CloseHandle(siProcessInformation.hThread);
+  m_hProcess = siProcessInformation.hProcess;
+#endif // PLATFORM_POSIX
+
+  m_state = ProcessState::RUNNING;
+  return true;
+}
+
+bool Process::signal(SignalType signal_type) {
+  if (m_state != ProcessState::RUNNING) {
+    eprintln("ERROR: Process::signal() called in invalid state");
+    errno = EINVAL;
+
+    // user-friendly error messages
+    eprint("  Hint:  ");
+    switch (m_state) {
+    case ProcessState::CONSTRUCTED: {
+      eprintln("process class is already constructed, call spawn() between ctor and signal()");
+    } break;
+    case ProcessState::REAPED: {
+      eprintln("process is already reaped, spawn() another one then signal() it");
+    } break;
+    case ProcessState::INVALID: {
+      eprintln("process is in weird state, maybe constructor failed");
+    } break;
+    default: UNREACHABLE("ProcessState switch-case in Process::signal()");
+    }
+    return -1;
+  }
+
+#ifdef PLATFORM_POSIX
+  assert(m_pid > 0 && "Process::signal(): RUNNING state but pid <= 0, invariant broken");
+  if (::kill(m_pid, to_posix(signal_type)) != 0) return false;
+#else // PLATFORM_WINDOWS
+  assert(m_hProcess && "Process::signal(): RUNNING state but m_hProcess = nullptr, invariant broken");
+  BOOL ret;
+  if (signal_type == SignalType::KILL) ret = TerminateProcess(m_hProcess, 1);
+  else ret = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0); // SIGINT
+  if (!ret) return false;
+#endif // PLATFORM_POSIX
+  m_state = ProcessState::REAPED;
+  return true;
+}
+
+int Process::wait() {
+  if (m_state != ProcessState::RUNNING) {
+    eprintln("ERROR: Process::wait() called in invalid state");
+    errno = EINVAL;
+
+    // user-friendly error messages
+    eprint("  Hint:  ");
+    switch (m_state) {
+    case ProcessState::CONSTRUCTED: {
+      eprintln("process class is already constructed, call spawn() between ctor and wait()");
+    } break;
+    case ProcessState::REAPED: {
+      eprintln("process is already reaped, spawn() another one then wait() it");
+    } break;
+    case ProcessState::INVALID: {
+      eprintln("process is in weird state, maybe constructor failed");
+    } break;
+    default: UNREACHABLE("ProcessState switch-case in Process::wait()");
+    }
+    return -1;
+  }
+
+#ifdef PLATFORM_POSIX
+  assert(m_pid && "Process::wait(): RUNNING state but pid <= 0, invariant broken");
+  int status;
+  if (::waitpid(m_pid, &status, 0) != m_pid) return -1;
+  if (WIFEXITED(status)) m_exit_code = WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) m_exit_code = 128 + WTERMSIG(status);
+#else // PLATFORM_POSIX
+  assert(m_hProcess && "Process::wait(): RUNNING state but m_hProcess = nullptr, invariant broken");
+  DWORD status;
+  if (WaitForSingleObject(m_hProcess, INFINITE) != WAIT_OBJECT_0) {
+    errno = win32::last_error_to_errno();
+    return -1;
+  }
+  if (!GetExitCodeProcess(m_hProcess, &status)) {
+    errno = win32::last_error_to_errno();
+    return -1;
+  }
+  m_exit_code = static_cast<int>(status);
+#endif
+  m_state = ProcessState::REAPED;
+  return m_exit_code;
+}
+} // namespace os
 
 // Dynamic Arrays implementation start
 template <typename T>
@@ -887,40 +1494,19 @@ void ArrayList<T>::construct_range(It first, It last) {
 }
 // Dynamic Arrays implementation end
 
-// Buic impl start
 bool CommandBuilder::run(CmdRunOptions opts) {
-  if (opts.is_log) {
-    printf("[BUIC/INFO] Running: ");
-    for (size_t i = 0; i < count(); i++) {
-      printf("%s", (*this)[i].c_str());
-      if (i != count() - 1) printf(" ");
-    }
-    printf("\n");
+  if (opts.is_log) println("INFO: Running: {}", *this);
+
+  os::Process proc(*this);
+  if (proc.state() != os::ProcessState::CONSTRUCTED) {
+    eprintln("ERROR: Cannot create process: {}", strerror(errno));
+    return false;
   }
+  if (!proc.spawn()) return false;
 
-  pid_t pid = posix::fork();
-  if (pid == 0) {
-    // child
-    auto arr = to_argv();
-    posix::execvp(arr[0], const_cast<char* const*>(arr.items()));
-    std::fprintf(stderr, "[BUIC/ERROR] ");
-    std::perror("execvp");
-    std::exit(1);
-  } else if (pid > 0) {
-    // parent
-    int wstatus = 0;
-
-    posix::waitpid(pid, &wstatus, 0);
-    if (posix::wifexited(wstatus)) {
-      int exit_code = posix::wexitstatus(wstatus);
-      if (exit_code != 0) {
-        std::fprintf(stderr, "[BUIC/ERROR] Command failed with code %d\n", exit_code);
-        return false;
-      }
-    }
-  } else {
-    std::fprintf(stderr, "[BUIC/ERROR] ");
-    std::perror("fork");
+  int exit_code = proc.wait();
+  if (exit_code != 0) {
+    eprintln("ERROR: Command failed with code {}: {}", exit_code, strerror(errno));
     return false;
   }
 
@@ -929,32 +1515,43 @@ bool CommandBuilder::run(CmdRunOptions opts) {
 }
 
 template<typename... Args>
-bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... args) {
+bool _rebuild_urself(int argc, char** argv, const char* file_name, Args... args) {
   const char* bin_name = argv[0];
   char old_bin[1024];
   snprintf(old_bin, sizeof old_bin, "%s.old", bin_name);
 
   bool needs_rebuild = false;
-  if (posix::access(old_bin, F_OK) != 0) {
+  if (os::access(old_bin, os::f_ok) != 0) {
     needs_rebuild = true;
   } else {
-    needs_rebuild = compare_mtimes(file_name, bin_name) >= 0;
+    struct os::stat st_file_name, st_bin_name;
+    if (os::stat(file_name, &st_file_name) != 0) {
+      eprintln("ERROR: cannot stat '{}': {}", file_name, strerror(errno));
+      return false;
+    }
+
+    if (os::stat(bin_name, &st_bin_name) != 0) {
+      eprintln("ERROR: cannot stat '{}': {}", bin_name, strerror(errno));
+      return false;
+    }
+
+    needs_rebuild = (st_file_name.st_mtime - st_bin_name.st_mtime) >= 0;
   }
 
   if (!needs_rebuild) return true;
-  printf("INFO: Change detected in build script, rebuilding itself.\n");
+  println("INFO: Change detected in build script, rebuilding itself.");
 
   // Rename the binary to old one
-  printf("INFO: Renaming: '%s' -> '%s'\n", bin_name, old_bin);
+  println("INFO: Renaming: '{}' -> '{}'", bin_name, old_bin);
   if (std::rename(bin_name, old_bin) != 0) {
-    fprintf(stderr, "ERROR: cannot rename '%s': %s\n", bin_name, strerror(errno));
+    eprintln("ERROR: cannot rename '{}': {}", bin_name, strerror(errno));
     return false;
   }
 
   // Construct and run rebuild command
   std::pair<const char*, Compiler> comp = get_native_compiler();
   if (comp.second == Compiler::UNKNOWN) {
-    fprintf(stderr, "ERROR: Unknown compiler: '%s'\n", comp.first);
+    eprintln("ERROR: Unknown compiler: '{}'", comp.first);
     return false;
   }
   CommandBuilder cmd;
@@ -965,28 +1562,22 @@ bool _buic_rebuild_urself(int argc, char** argv, const char* file_name, Args... 
 
   // Run rebuild command
   if (!cmd.run()) {
-    fprintf(stderr, "ERROR: cannot rebuild itself.\n");
+    eprintln("ERROR: cannot rebuild itself.");
     return false;
   }
 
   // Run the new binary and exit this old one
-  posix::execvp(bin_name, argv);
-  fprintf(stderr, "ERROR: cannot run new binary: %s\n", strerror(errno));
-  return false;
-}
-
-posix::time_t compare_mtimes(const char* f1, const char* f2) {
-  struct posix::stat st_f1, st_f2;
-  if (posix::stat(f1, &st_f1) != 0) {
-    fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f1, strerror(errno));
+#ifdef PLATFORM_WINDOWS
+  os::Process proc(bin_name, argc, argv);
+#else
+  os::Process proc(bin_name, argc, argv);
+#endif
+  if (proc.state() != os::ProcessState::CONSTRUCTED) {
+    eprintln("ERROR: cannot run new binary: {}", strerror(errno));
     return false;
   }
-
-  if (posix::stat(f2, &st_f2) != 0) {
-    fprintf(stderr, "ERROR: cannot stat '%s': %s\n", f2, strerror(errno));
-    return false;
-  }
-  return (posix::time_t)(st_f1.st_mtime - st_f2.st_mtime);
+  if (!proc.spawn()) return false;
+  std::exit(proc.wait());
 }
 
 const char* to_string(Compiler e) {
@@ -998,7 +1589,7 @@ const char* to_string(Compiler e) {
   case Compiler::INTEL_CLASSIC: return "icpc";
   default: return "<invalid>";
   }
-  UNREACHABLE("const char* to_string(buicpp::Compiler e)");
+  UNREACHABLE("const char* to_string(icl::Compiler e)");
 }
 
 Compiler compiler_from_cstr(const char* str) {
@@ -1025,11 +1616,11 @@ std::pair<const char*, Compiler> get_native_compiler() {
   #else
     #error "Unknown compiler, define NATIVE_COMPILER manually"
   #endif
-  UNREACHABLE("std::pair<const char*, buicpp::Compiler> get_native_compiler()");
+  UNREACHABLE("std::pair<const char*, icl::Compiler> get_native_compiler()");
 #endif
 }
-// Buic impl end
 
+// io impl start
 namespace io {
 bool mkdir_if_not_exists(const char* path) {
   for (const char* p = path + 1; *p != '\0'; p++) {
@@ -1038,7 +1629,7 @@ bool mkdir_if_not_exists(const char* path) {
       if (i >= PATH_MAX) return false;
       char buf[PATH_MAX] = {0};
       std::memcpy(buf, path, i);
-      if (posix::mkdir(buf, 0775) != 0 && errno != EEXIST) return false;
+      if (os::mkdir(buf, 0775) != 0 && errno != EEXIST) return false;
     }
   }
   return true;
@@ -1047,9 +1638,9 @@ bool mkdir_if_not_exists(const char* path) {
 // no recursion here
 Result<File> read_directory(const char* dir_path, bool read_content) {
   // open directory
-  DIR *dir_ptr = posix::opendir(dir_path);
+  os::DIR *dir_ptr = os::opendir(dir_path);
   if (!dir_ptr) return Err({errno, "opendir failed", __FILE__, __LINE__});
-  defer { posix::closedir(dir_ptr); };
+  defer { os::closedir(dir_ptr); };
 
   // stat of directory itself
   auto ret = read_file_metadata(dir_path);
@@ -1057,8 +1648,8 @@ Result<File> read_directory(const char* dir_path, bool read_content) {
   File dir = std::move(ret).value();
 
   // iterate directory (no recursive look)
-  struct posix::dirent *entry;
-  while ((entry = posix::readdir(dir_ptr)) != NULL) {
+  struct os::dirent *entry;
+  while ((entry = os::readdir(dir_ptr)) != NULL) {
     if (strcmp(entry->d_name, ".") == 0 ||
         strcmp(entry->d_name, "..") == 0) continue;
 
@@ -1117,14 +1708,14 @@ Result<std::string> read_file_content(const char* file_path, size_t file_size) {
 
 Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
   File result;
-  struct posix::stat st;
+  struct os::stat st;
   if (follow_symlink) {
-    if (posix::stat(file_path, &st) != 0) return Err({errno, "stat failed", __FILE__, __LINE__});
+    if (os::stat(file_path, &st) != 0) return Err({errno, "stat failed", __FILE__, __LINE__});
   } else {
-    if (posix::lstat(file_path, &st) != 0) return Err({errno, "lstat failed", __FILE__, __LINE__});
+    if (os::lstat(file_path, &st) != 0) return Err({errno, "lstat failed", __FILE__, __LINE__});
   }
 
-  result.type = to_filetype((posix::mode_t)st.st_mode);
+  result.type = to_filetype((os::mode_t)st.st_mode);
   result.name = std::string(file_path);
   result.mtime = st.st_mtime;
   result.inode = st.st_ino;
@@ -1133,7 +1724,7 @@ Result<File> read_file_metadata(const char* file_path, bool follow_symlink) {
 
   if (result.type == FileType::SYMLINK) {
     char buf[PATH_MAX];
-    ssize_t n = posix::readlink(file_path, buf, sizeof(buf));
+    ssize_t n = os::readlink(file_path, buf, sizeof(buf));
     if (n < 0) { return Err({errno, "readlink failed"}); }
     result.content = std::string(buf, n);
   }
@@ -1153,23 +1744,23 @@ Result<File> read_entire_file(const char* file_path, bool follow_symlink) {
   return Ok(std::move(result));
 }
 
-FileType to_filetype(posix::mode_t mode) {
-  switch (mode & posix::ifmt) {
-  case posix::ifreg: return FileType::REGULAR;
-  case posix::ifdir: return FileType::DIRECTORY;
-  case posix::ifchr: return FileType::CHARDEV;
-  case posix::iflnk: return FileType::SYMLINK;
-  case posix::ifblk: return FileType::BLOCKDEV;
-  default:      return FileType::UNKNOWN;
+FileType to_filetype(os::mode_t mode) {
+  switch (mode & os::ifmt) {
+  case os::ifreg: return FileType::REGULAR;
+  case os::ifdir: return FileType::DIRECTORY;
+  case os::ifchr: return FileType::CHARDEV;
+  case os::iflnk: return FileType::SYMLINK;
+  case os::ifblk: return FileType::BLOCKDEV;
+  default:        return FileType::UNKNOWN;
   }
   UNREACHABLE("to_filetype");
 }
 
-FilePermission to_filepermission(mode_t mode){
+FilePermission to_filepermission(os::mode_t mode){
   FilePermission perms = FilePermission::NONE;
-  if (mode & posix::irusr) perms |= FilePermission::READ;
-  if (mode & posix::iwusr) perms |= FilePermission::WRITE;
-  if (mode & posix::ixusr) perms |= FilePermission::EXECUTE;
+  if (mode & os::irusr) perms |= FilePermission::READ;
+  if (mode & os::iwusr) perms |= FilePermission::WRITE;
+  if (mode & os::ixusr) perms |= FilePermission::EXECUTE;
   return perms;
 }
 
@@ -1182,17 +1773,18 @@ const char* to_string(FileType ft) {
   case FileType::SYMLINK: return "symlink";
   default: return "<unknown>";
   }
-  UNREACHABLE("const char* to_string(buicpp::io::FileType e)");
+  UNREACHABLE("const char* to_string(icl::io::FileType e)");
 }
 
 } // namespace io
+// io impl end
 
-} // namespace buicpp
+} // namespace icl
 
 #if __cplusplus >= 202002L || (defined(__cpp_lib_format) && __cpp_lib_format >= 201907L)
 template <typename T>
-auto std::formatter<buicpp::ArrayList<T>>::format(
-  const buicpp::ArrayList<T>& arr,
+auto std::formatter<icl::ArrayList<T>>::format(
+  const icl::ArrayList<T>& arr,
   std::format_context& ctx
 ) const -> decltype(ctx.out())
 {
@@ -1204,9 +1796,28 @@ auto std::formatter<buicpp::ArrayList<T>>::format(
   result += "]";
   return std::formatter<std::string>::format(result, ctx);
 }
+
+auto std::formatter<icl::CommandBuilder>::format(
+  const icl::CommandBuilder& cmd,
+  std::format_context& ctx
+) const -> decltype(ctx.out())
+{
+  std::string result;
+  for (size_t i = 0; i < cmd.count(); i++) {
+    const std::string& elem = cmd[i];
+#ifdef PLATFORM_POSIX
+    result += elem;
+#else
+    std::wstring welem = win32::to_wstring(elem);
+    win32::cmdline_escape_if_needed(welem);
+    result += win32::to_string(welem);
+#endif
+    if (i != cmd.count() - 1) result += " ";
+  }
+  return std::formatter<std::string>::format(result, ctx);
+}
 #endif
 
+#endif // ICL_IMPLEMENTATION
 
-#endif // BUICPP_IMPLEMENTATION
-
-#endif // BUICPP_HPP
+#endif // ICL_HPP

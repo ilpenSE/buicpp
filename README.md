@@ -1,4 +1,4 @@
-# BUICPP - BUild In C++
+# ICL - ilpeN's C/C++ Library
 
 > [!CAUTION]
 > This library and this documentation are unfinished yet.
@@ -6,7 +6,7 @@
 - This library brings building C++ code or run commands in C++ without any CMake or Makefile
 - Although, it's NOT COMPLETED yet, it can do things
 - But it's limited now for example you cannot have dependencies or capturing stdout/stderr
-- Everything is under buic namespace except u/i X style integer types.
+- Everything is under icl namespace except u/i X style integer types.
 
 # API
 - This section is unfinished
@@ -14,7 +14,7 @@
 ## io sub-namespace
 This namespace is related to filesystem
 
-- ### `buicpp::Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);`
+- ### `icl::Result<std::string> read_file_content(const char* file_path, size_t file_size = 0);`
 
   #### Description
   - Reads whole content of the file from the provided file path
@@ -28,7 +28,7 @@ This namespace is related to filesystem
   - Wrapped with Result to indicate errors.
   - On stdio errors, it'll return error struct and code field is errno, msg field is a function failed
 
-- ### `buicpp::Result<buicpp::io::File> read_entire_file(const char* file_path);`
+- ### `icl::Result<icl::io::File> read_entire_file(const char* file_path);`
 
   #### Description
   - Reads whole content of the file from the provided file path

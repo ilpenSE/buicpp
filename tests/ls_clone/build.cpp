@@ -1,13 +1,13 @@
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
-using namespace buicpp;
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
+using namespace icl;
 
 #define DEBUG 1
 
 int main(int argc, char** argv) {
   REBUILD_URSELF(argc, argv);
   CommandBuilder cmd;
-  cmd.push("clang++");
+  cmd.push("g++");
 
 #if DEBUG == 1
   cmd.push_many("-O0", "-ggdb", "-fsanitize=address,undefined");

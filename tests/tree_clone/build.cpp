@@ -1,14 +1,14 @@
 #include <stdio.h>
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
 
 #define BUILD_FOLDER "build/"
 
 int main(int argc, char** argv) {
   REBUILD_URSELF(argc, argv);
-  if (!buicpp::io::mkdir_if_not_exists(BUILD_FOLDER)) return 1;
-  buicpp::CommandBuilder cmd;
-  cmd.push("clang++");
+  if (!icl::io::mkdir_if_not_exists(BUILD_FOLDER)) return 1;
+  icl::CommandBuilder cmd;
+  cmd.push("g++");
 
   cmd.push_many("-ggdb", "-O0", "-fno-exceptions", "-fsanitize=address,undefined");
 

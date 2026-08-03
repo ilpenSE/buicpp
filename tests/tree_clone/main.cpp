@@ -1,9 +1,9 @@
 #include <cinttypes>
 #include <memory>
 
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
-using namespace buicpp;
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
+using namespace icl;
 
 void print_tree(const io::File& file, std::string_view prefix = "", bool is_last = true, bool is_root = true) {
   std::string_view display_name = file.name;

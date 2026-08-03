@@ -1,5 +1,5 @@
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
 
 int main(int argc, char** argv) {
   // Enables rebuilding itself (this build script) with it's bootstrapped compiler
@@ -7,7 +7,7 @@ int main(int argc, char** argv) {
 
   // Just build a command and just run it
   // You can call other commands by the way not always build commands
-  buicpp::CommandBuilder cmd;
+  icl::CommandBuilder cmd;
   cmd.push_many("g++", "-o", "main", "main.cpp");
   if (!cmd.run()) return 1;
 }

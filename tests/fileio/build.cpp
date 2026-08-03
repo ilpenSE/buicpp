@@ -1,11 +1,12 @@
-#define BUICPP_IMPLEMENTATION
-#include "buicpp.hpp"
+#define ICL_IMPLEMENTATION
+#include "icl.hpp"
 
 #define DEBUG 1
 
 int main(int argc, char** argv) {
   REBUILD_URSELF(argc, argv);
-  buicpp::CommandBuilder cmd;
+
+  icl::CommandBuilder cmd;
   cmd.push("clang++");
 
 #if DEBUG == 1
@@ -14,6 +15,7 @@ int main(int argc, char** argv) {
   cmd.push_many("-O2");
 #endif
 
+  cmd.push("-std=c++23");
   cmd.push("main.cpp");
   cmd.push_many("-o", "main");
   if (!cmd.run()) return 1;
