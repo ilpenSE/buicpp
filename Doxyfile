@@ -1,0 +1,35 @@
+# Doxyfile 1.16.1
+
+PROJECT_NAME           = "icl"
+PROJECT_BRIEF          = "Collection of convenient C/C++ headers"
+PROJECT_NUMBER         = "0.0.1" # Beta
+
+GENERATE_HTML          = YES
+GENERATE_XML           = YES
+GENERATE_MAN           = YES
+GENERATE_LATEX         = YES
+
+INPUT                  = include
+FILE_PATTERNS          = *.h *.hpp
+
+RECURSIVE              = YES
+OUTPUT_DIRECTORY       = docs
+
+#HTML_EXTRA_STYLESHEET  = docs/custom.css
+EXCLUDE_SYMLINKS       = YES
+DOXYFILE_ENCODING      = UTF-8
+INPUT_ENCODING         = UTF-8
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+EXTRACT_LOCAL_CLASSES  = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+MARKDOWN_SUPPORT       = YES
+SORT_MEMBER_DOCS       = YES
+SORT_BRIEF_DOCS        = YES
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+GENERATE_TREEVIEW      = YES
+SEARCHENGINE           = YES

@@ -3,3 +3,8 @@ buic
 *.old
 build
 *.exe
+docs
+*.obj
+*.dll
+*.lib
+*.a

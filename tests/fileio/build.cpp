@@ -1,10 +1,9 @@
-#define ICL_IMPLEMENTATION
-#include "icl.hpp"
+#include <icl/build>
 
 #define DEBUG 1
 
 int main(int argc, char** argv) {
-  REBUILD_URSELF(argc, argv);
+  REBUILD_URSELF(argc, argv, "-I../../include", "-L../../build", "-l:libicl.a");
 
   icl::CommandBuilder cmd;
   cmd.push("clang++");

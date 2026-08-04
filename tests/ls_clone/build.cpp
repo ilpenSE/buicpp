@@ -1,12 +1,10 @@
-#define ICL_IMPLEMENTATION
-#include "icl.hpp"
-using namespace icl;
+#include <icl/build>
 
 #define DEBUG 1
 
 int main(int argc, char** argv) {
-  REBUILD_URSELF(argc, argv);
-  CommandBuilder cmd;
+  REBUILD_URSELF(argc, argv, "-I../../include", "-L../../build", "-l:libicl.a");
+  icl::CommandBuilder cmd;
   cmd.push("g++");
 
 #if DEBUG == 1
